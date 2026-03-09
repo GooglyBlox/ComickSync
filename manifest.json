@@ -1,0 +1,44 @@
+{
+    "manifest_version": 3,
+    "name": "ComickSync",
+    "version": "1.0",
+    "description": "Sync your manga reading progress to Comick",
+    "author": "GooglyBlox",
+    "permissions": [
+        "cookies",
+        "storage",
+        "tabs",
+        "scripting",
+        "alarms"
+    ],
+    "host_permissions": [
+        "*://comick.dev/*",
+        "*://api.comick.dev/*",
+        "*://chibi.malsync.moe/*",
+        "<all_urls>"
+    ],
+    "background": {
+        "service_worker": "background/service-worker.js",
+        "type": "module"
+    },
+    "content_scripts": [
+        {
+            "matches": ["<all_urls>"],
+            "js": [
+                "content/detector.js"
+            ],
+            "run_at": "document_idle"
+        }
+    ],
+    "web_accessible_resources": [
+        {
+            "resources": [
+                "chibi/evaluator.js"
+            ],
+            "matches": ["<all_urls>"]
+        }
+    ],
+    "action": {
+        "default_popup": "popup/popup.html"
+    }
+}

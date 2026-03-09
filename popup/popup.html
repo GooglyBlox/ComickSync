@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ComickSync</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <h1>ComickSync</h1>
+      </header>
+
+      <div id="loading" class="state">
+        <p>Loading...</p>
+      </div>
+
+      <div id="logged-out" class="state" hidden>
+        <p>Sign in to Comick to start syncing your reading progress.</p>
+        <button id="login-btn">Sign in to Comick</button>
+        <button id="refresh-btn" class="secondary">
+          I've already signed in
+        </button>
+      </div>
+
+      <div id="logged-in" class="state" hidden>
+        <div class="user-card">
+          <span class="username" id="username"></span>
+          <span class="stats" id="stats"></span>
+        </div>
+        <div class="info-row">
+          <span>Followed comics</span>
+          <span id="follow-count"></span>
+        </div>
+        <div class="info-row">
+          <span>Pending syncs</span>
+          <span id="pending-count"></span>
+        </div>
+        <button id="refresh-auth-btn" class="secondary">Refresh session</button>
+      </div>
+    </div>
+    <script src="popup.js"></script>
+  </body>
+</html>
