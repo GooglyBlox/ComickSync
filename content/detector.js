@@ -6,7 +6,7 @@
     const FLOAT_ID = 'comicksync-float-btn';
     const DEBUG = false;
     const LOG_PREFIX = '[ComickSync][content]';
-    const TOAST_DURATION_MS = 2600;
+    const DEFAULT_TOAST_DURATION_MS = 2600;
     let runnerPromise = null;
     let activeRequestId = 0;
     let lastDetectionKey = '';
@@ -18,6 +18,7 @@
     let floatLastDetection = null;
     let floatLastResponse = null;
     let cancelledDetectionKey = '';
+    let toastDurationMs = DEFAULT_TOAST_DURATION_MS;
 
     function log(...args) {
         if (!DEBUG) {
@@ -99,6 +100,55 @@
                 line-height: 1.35;
                 color: inherit;
                 opacity: 0.82;
+            }
+
+            #${PANEL_ID} .comicksync-panel__actions {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 8px;
+                margin-top: 8px;
+            }
+
+            #${PANEL_ID} .comicksync-panel__action,
+            #${PANEL_ID} .comicksync-panel__input-btn {
+                appearance: none;
+                border: 1px solid currentColor;
+                background: transparent;
+                color: inherit;
+                font: inherit;
+                font-size: 12px;
+                line-height: 1.2;
+                padding: 6px 9px;
+                cursor: pointer;
+            }
+
+            #${PANEL_ID} .comicksync-panel__action:hover,
+            #${PANEL_ID} .comicksync-panel__input-btn:hover {
+                opacity: 0.86;
+            }
+
+            #${PANEL_ID} .comicksync-panel__input {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                flex-wrap: wrap;
+                margin-top: 8px;
+            }
+
+            #${PANEL_ID} .comicksync-panel__input-field {
+                width: 84px;
+                border: 1px solid currentColor;
+                background: transparent;
+                color: inherit;
+                font: inherit;
+                font-size: 12px;
+                line-height: 1.2;
+                padding: 6px 8px;
+            }
+
+            #${PANEL_ID} .comicksync-panel__hint {
+                font-size: 11px;
+                opacity: 0.68;
             }
 
             #${PANEL_ID} .comicksync-panel__meta-line {
@@ -230,18 +280,35 @@
                 font-size: 11px;
             }
 
-            #${FLOAT_ID} .float-popup-link {
-                display: inline-block;
-                margin-top: 4px;
-                color: #d5d5d5;
-                text-decoration: underline;
-                text-underline-offset: 2px;
-                text-decoration-color: #555;
-                font-size: 11px;
+            #${FLOAT_ID} .float-popup-actions {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 6px;
+                margin-top: 8px;
             }
 
-            #${FLOAT_ID} .float-popup-link:hover {
-                text-decoration-color: #d5d5d5;
+            #${FLOAT_ID} .float-popup-btn,
+            #${FLOAT_ID} .float-popup-link {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                min-height: 26px;
+                padding: 0 8px;
+                border: 1px solid #555;
+                background: transparent;
+                color: #d5d5d5;
+                text-decoration: none;
+                font: 11px/1.2 "Segoe UI", system-ui, sans-serif;
+                cursor: pointer;
+            }
+
+            #${FLOAT_ID} .float-popup-link {
+                text-decoration: none;
+            }
+
+            #${FLOAT_ID} .float-popup-link:hover,
+            #${FLOAT_ID} .float-popup-btn:hover {
+                border-color: #d5d5d5;
             }
 
         `;
@@ -256,6 +323,8 @@
             <div class="comicksync-panel__eyebrow">ComickSync</div>
             <div class="comicksync-panel__title"></div>
             <div class="comicksync-panel__meta"></div>
+            <div class="comicksync-panel__actions" hidden></div>
+            <div class="comicksync-panel__input" hidden></div>
         `;
         return panel;
     }
@@ -270,6 +339,14 @@
 
     function clearPanel() {
         document.getElementById(PANEL_ID)?.remove();
+    }
+
+    function dismissDetection(detection) {
+        cancelledDetectionKey = makeDetectionKey(detection);
+        lastDetectionKey = '';
+        lastRenderedState = null;
+        clearPanel();
+        removeFloatButton();
     }
 
     function getToast() {
@@ -316,7 +393,7 @@
         toastTimer = setTimeout(() => {
             toast.classList.remove('is-visible');
             toastTimer = null;
-        }, TOAST_DURATION_MS);
+        }, toastDurationMs);
     }
 
     function clearChapterIndicators() {
@@ -416,7 +493,197 @@
         target.prepend(panel);
     }
 
-    function setPanelState(adapter, runner, pageType, state, title, metaLines) {
+    function openUrl(url) {
+        if (!url) {
+            return;
+        }
+        window.open(url, '_blank', 'noopener,noreferrer');
+    }
+
+    function getComickUrl(slug) {
+        return slug ? `https://comick.dev/comic/${slug}` : '';
+    }
+
+    function sendBackgroundMessage(message) {
+        return new Promise((resolve, reject) => {
+            chrome.runtime.sendMessage(message, (response) => {
+                if (chrome.runtime.lastError) {
+                    reject(new Error(chrome.runtime.lastError.message));
+                    return;
+                }
+                resolve(response);
+            });
+        });
+    }
+
+    async function performSync(adapter, runner, detection, overrides = {}) {
+        const syncDetection = {
+            ...detection,
+            ...overrides,
+            skipConfirmation: true,
+        };
+        const response = await sendBackgroundMessage({ type: 'SYNC_DETECTION', detection: syncDetection });
+        const responseDetection = {
+            ...detection,
+            ...overrides,
+        };
+        if (response?.synced) {
+            cancelledDetectionKey = '';
+        }
+        lastDetectionKey = makeDetectionKey(detection);
+        lastRenderedState = { key: makeDetectionKey(detection), response };
+        renderResponseState(adapter, runner, responseDetection, response);
+        return response;
+    }
+
+    function getActionDescriptors(detection, response, options = {}) {
+        const actions = [];
+        const comickUrl = getComickUrl(response?.comicSlug);
+
+        if (response?.reason === 'confirmation_required') {
+            actions.push({
+                label: 'Sync now',
+                onClick: () => performSync(options.adapter, options.runner, detection),
+            });
+            actions.push({
+                label: 'Skip',
+                onClick: () => {
+                    dismissDetection(detection);
+                    showToast(
+                        response.comicTitle ?? detection.title,
+                        `Skipped syncing Chapter ${detection.episode}`,
+                        `${makeDetectionKey(detection)}:sync_cancelled`
+                    );
+                },
+            });
+        }
+
+        if (detection?.pageType === 'sync' && !response?.synced && response?.reason !== 'not_authenticated') {
+            actions.push({
+                label: response?.reason === 'chapter_not_found' ? 'Retry sync' : 'Mark current chapter',
+                onClick: () => performSync(options.adapter, options.runner, detection),
+            });
+        }
+
+        if (response?.reason === 'not_authenticated') {
+            actions.push({
+                label: 'Sign in to Comick',
+                onClick: () => openUrl('https://comick.dev/user/login'),
+            });
+        }
+
+        if (comickUrl) {
+            actions.push({
+                label: 'Open on Comick',
+                onClick: () => openUrl(comickUrl),
+            });
+        }
+
+        if (detection?.nextEpUrl) {
+            actions.push({
+                label: 'Next chapter',
+                onClick: () => {
+                    window.location.href = detection.nextEpUrl;
+                },
+            });
+        }
+
+        return actions.filter((action, index, array) => {
+            return array.findIndex((item) => item.label === action.label) === index;
+        });
+    }
+
+    function createManualSyncConfig(detection, response, options = {}) {
+        if (detection?.pageType !== 'sync' || response?.reason === 'not_authenticated') {
+            return null;
+        }
+
+        const defaultEpisode = detection?.episode != null ? String(detection.episode) : '';
+        return {
+            buttonLabel: 'Sync chapter',
+            defaultValue: defaultEpisode,
+            hint: 'Need to correct the chapter number? Enter it here and sync manually.',
+            onSubmit: async (value) => {
+                const normalized = String(value ?? '').trim();
+                if (!normalized) {
+                    return;
+                }
+                await performSync(options.adapter, options.runner, detection, { episode: normalized });
+            },
+        };
+    }
+
+    function bindPanelInteractions(panel, actions = [], manualSync = null) {
+        const actionsElement = panel.querySelector('.comicksync-panel__actions');
+        const inputElement = panel.querySelector('.comicksync-panel__input');
+
+        if (actionsElement) {
+            if (actions.length === 0) {
+                actionsElement.hidden = true;
+                actionsElement.innerHTML = '';
+            } else {
+                actionsElement.hidden = false;
+                actionsElement.innerHTML = '';
+                actions.forEach((action) => {
+                    const button = document.createElement('button');
+                    button.type = 'button';
+                    button.className = 'comicksync-panel__action';
+                    button.textContent = action.label;
+                    button.addEventListener('click', () => action.onClick());
+                    actionsElement.appendChild(button);
+                });
+            }
+        }
+
+        if (inputElement) {
+            if (!manualSync) {
+                inputElement.hidden = true;
+                inputElement.innerHTML = '';
+            } else {
+                inputElement.hidden = false;
+                inputElement.innerHTML = '';
+
+                const field = document.createElement('input');
+                field.type = 'text';
+                field.inputMode = 'decimal';
+                field.value = manualSync.defaultValue ?? '';
+                field.className = 'comicksync-panel__input-field';
+                field.placeholder = 'Chapter';
+
+                const submit = document.createElement('button');
+                submit.type = 'button';
+                submit.className = 'comicksync-panel__input-btn';
+                submit.textContent = manualSync.buttonLabel;
+
+                const hint = document.createElement('div');
+                hint.className = 'comicksync-panel__hint';
+                hint.textContent = manualSync.hint;
+
+                const submitHandler = async () => {
+                    submit.disabled = true;
+                    try {
+                        await manualSync.onSubmit(field.value);
+                    } finally {
+                        submit.disabled = false;
+                    }
+                };
+
+                submit.addEventListener('click', submitHandler);
+                field.addEventListener('keydown', (event) => {
+                    if (event.key === 'Enter') {
+                        event.preventDefault();
+                        submitHandler();
+                    }
+                });
+
+                inputElement.appendChild(field);
+                inputElement.appendChild(submit);
+                inputElement.appendChild(hint);
+            }
+        }
+    }
+
+    function setPanelState(adapter, runner, pageType, state, title, metaLines, options = {}) {
         ensureStyle();
 
         const panel = getPanel();
@@ -442,6 +709,8 @@
                 `;
             })
             .join('');
+
+        bindPanelInteractions(panel, options.actions ?? [], options.manualSync ?? null);
 
         placePanel(panel, adapter, runner, pageType);
     }
@@ -486,7 +755,9 @@
                         ? `Chapter ${response.libraryLastChapter}`
                         : 'Latest chapter unavailable',
                 },
-            ]);
+            ], {
+                actions: getActionDescriptors(detection, response, { adapter, runner }),
+            });
             return true;
         }
 
@@ -494,71 +765,83 @@
             clearChapterIndicators();
             setPanelState(adapter, runner, pageType, 'warning', detection.title, [
                 { label: 'Status', value: 'No matching series found on Comick' },
-            ]);
+            ], {
+                actions: getActionDescriptors(detection, response, { adapter, runner }),
+                manualSync: createManualSyncConfig(detection, response, { adapter, runner }),
+            });
             return true;
         }
 
         if (response?.reason === 'chapter_not_found') {
-            if (pageType === 'sync') {
-                clearPanel();
-                if (shouldNotify) {
-                    showToast(
-                        response.comicTitle ?? detection.title,
-                        `Series found, but Chapter ${detection.episode} was not found on Comick`,
-                        `${makeDetectionKey(detection)}:chapter_not_found`
-                    );
-                }
-                return true;
+            if (pageType === 'sync' && shouldNotify) {
+                showToast(
+                    response.comicTitle ?? detection.title,
+                    `Series found, but Chapter ${detection.episode} was not found on Comick`,
+                    `${makeDetectionKey(detection)}:chapter_not_found`
+                );
             }
             setPanelState(adapter, runner, pageType, 'warning', response.comicTitle ?? detection.title, [
                 { label: 'Status', value: `Series found, but Chapter ${detection.episode} was not found on Comick` },
-            ]);
+            ], {
+                actions: getActionDescriptors(detection, response, { adapter, runner }),
+                manualSync: createManualSyncConfig(detection, response, { adapter, runner }),
+            });
             return true;
         }
 
         if (response?.reason === 'not_authenticated') {
-            if (pageType === 'sync') {
-                clearPanel();
-                if (shouldNotify) {
-                    showToast('ComickSync', 'Log in to Comick to sync progress', `${makeDetectionKey(detection)}:not_authenticated`);
-                }
-                return true;
+            if (pageType === 'sync' && shouldNotify) {
+                showToast('ComickSync', 'Log in to Comick to sync progress', `${makeDetectionKey(detection)}:not_authenticated`);
             }
             setPanelState(adapter, runner, pageType, 'warning', detection.title, [
                 { label: 'Status', value: 'Log in to Comick to sync progress' },
-            ]);
+            ], {
+                actions: getActionDescriptors(detection, response, { adapter, runner }),
+            });
             return true;
         }
 
         if (response?.reason === 'sync_cancelled') {
-            if (pageType === 'sync') {
-                clearPanel();
-                if (shouldNotify) {
-                    showToast(
-                        response.comicTitle ?? detection.title,
-                        `Skipped syncing Chapter ${detection.episode}`,
-                        `${makeDetectionKey(detection)}:sync_cancelled`
-                    );
-                }
-                return true;
+            if (pageType === 'sync' && shouldNotify) {
+                showToast(
+                    response.comicTitle ?? detection.title,
+                    `Skipped syncing Chapter ${detection.episode}`,
+                    `${makeDetectionKey(detection)}:sync_cancelled`
+                );
             }
             setPanelState(adapter, runner, pageType, 'warning', detection.title, [
                 { label: 'Status', value: 'Sync cancelled' },
-            ]);
+            ], {
+                actions: getActionDescriptors(detection, response, { adapter, runner }),
+                manualSync: createManualSyncConfig(detection, response, { adapter, runner }),
+            });
             return true;
         }
 
         if (response?.reason === 'sync_error' || response?.error) {
-            if (pageType === 'sync') {
-                clearPanel();
-                if (shouldNotify) {
-                    showToast(detection.title, 'Sync failed', `${makeDetectionKey(detection)}:sync_error`);
-                }
-                return true;
+            if (pageType === 'sync' && shouldNotify) {
+                showToast(detection.title, 'Sync failed', `${makeDetectionKey(detection)}:sync_error`);
             }
             setPanelState(adapter, runner, pageType, 'error', detection.title, [
                 { label: 'Status', value: 'Sync failed' },
-            ]);
+            ], {
+                actions: getActionDescriptors(detection, response, { adapter, runner }),
+                manualSync: createManualSyncConfig(detection, response, { adapter, runner }),
+            });
+            return true;
+        }
+
+        if (response?.reason === 'confirmation_required') {
+            setPanelState(adapter, runner, pageType, 'warning', response.comicTitle ?? detection.title, [
+                { label: 'Status', value: 'This looks like a new series. Sync only if you want to start it on Comick.' },
+                {
+                    label: 'Chapter',
+                    value: detection?.episode != null ? `Chapter ${detection.episode}` : 'Unknown',
+                },
+            ], {
+                actions: getActionDescriptors(detection, response, { adapter, runner }),
+                manualSync: createManualSyncConfig(detection, response, { adapter, runner }),
+            });
             return true;
         }
 
@@ -641,10 +924,12 @@
                 <div class="float-popup">
                     <div class="float-popup-title"></div>
                     <div class="float-popup-meta"></div>
+                    <div class="float-popup-actions"></div>
                 </div>
             `;
             btn.addEventListener('click', (e) => {
                 if (e.target.closest('.float-popup-link')) return;
+                if (e.target.closest('.float-popup-btn')) return;
                 btn.classList.toggle('is-expanded');
             });
             document.documentElement.appendChild(btn);
@@ -671,6 +956,7 @@
         const title = response?.comicTitle ?? detection?.title ?? '';
         const popupTitle = btn.querySelector('.float-popup-title');
         const popupMeta = btn.querySelector('.float-popup-meta');
+        const popupActions = btn.querySelector('.float-popup-actions');
 
         if (!detection) {
             removeFloatButton();
@@ -685,8 +971,7 @@
                 const chInfo = response.libraryEpisode != null
                     ? `Ch. ${response.libraryEpisode}${response.libraryLastChapter ? ` / ${response.libraryLastChapter}` : ''}`
                     : `Ch. ${detection.episode} synced`;
-                popupMeta.innerHTML = escapeHtml(chInfo)
-                    + (slug ? `<br><a class="float-popup-link" href="https://comick.dev/comic/${escapeHtml(slug)}" target="_blank">View on Comick</a>` : '');
+                popupMeta.textContent = chInfo;
             }
         } else if (response?.matched) {
             const slug = response.comicSlug;
@@ -694,10 +979,7 @@
                 ? `Reading: Ch. ${response.libraryEpisode}${response.libraryLastChapter ? ` / ${response.libraryLastChapter}` : ''}`
                 : response.inLibrary ? 'In your library' : 'Not in library';
             if (popupTitle) popupTitle.textContent = title;
-            if (popupMeta) {
-                popupMeta.innerHTML = escapeHtml(chInfo)
-                    + (slug ? `<br><a class="float-popup-link" href="https://comick.dev/comic/${escapeHtml(slug)}" target="_blank">View on Comick</a>` : '');
-            }
+            if (popupMeta) popupMeta.textContent = chInfo;
         } else if (response?.reason) {
             btn.classList.add('is-error');
             if (popupTitle) popupTitle.textContent = title || 'Unknown';
@@ -707,13 +989,23 @@
                 response.reason === 'sync_cancelled' ? 'Sync cancelled' : 'Sync error';
         } else {
             removeFloatButton();
+            return;
         }
-    }
 
-    function buildConfirmationMessage(detection, response) {
-        const seriesTitle = response?.comicTitle ?? detection?.title ?? 'this series';
-        const chapterLabel = detection?.episode != null ? `Chapter ${detection.episode}` : 'this chapter';
-        return `Start reading "${seriesTitle}" on Comick and mark ${chapterLabel} as read?`;
+        if (popupActions) {
+            popupActions.innerHTML = '';
+            getActionDescriptors(detection, response, { adapter: null, runner: null }).slice(0, 3).forEach((action) => {
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'float-popup-btn';
+                button.textContent = action.label;
+                button.addEventListener('click', (event) => {
+                    event.stopPropagation();
+                    action.onClick();
+                });
+                popupActions.appendChild(button);
+            });
+        }
     }
 
     function loadFloatSettings() {
@@ -723,7 +1015,19 @@
         });
     }
 
+    function loadOverlaySettings() {
+        chrome.runtime.sendMessage({ type: 'GET_SETTINGS' }, (response) => {
+            if (chrome.runtime.lastError) return;
+            const settings = response?.settings ?? {};
+            const configuredDuration = Number(settings.toastDuration);
+            toastDurationMs = Number.isFinite(configuredDuration) && configuredDuration > 0
+                ? configuredDuration
+                : DEFAULT_TOAST_DURATION_MS;
+        });
+    }
+
     loadFloatSettings();
+    loadOverlaySettings();
 
     async function getRunnerModule() {
         if (!runnerPromise) {
@@ -830,6 +1134,11 @@
                 log('Detection payload', detection);
 
                 const detectionKey = makeDetectionKey(detection);
+                if (detectionKey === cancelledDetectionKey) {
+                    clearPanel();
+                    removeFloatButton();
+                    return;
+                }
                 if (detectionKey === lastDetectionKey && lastRenderedState?.key === detectionKey) {
                     renderResponseState(adapter, runner, detection, lastRenderedState.response, { notify: false });
                     return;
@@ -865,31 +1174,12 @@
                             || response?.reason === 'sync_error'
                             || response?.error
                         ) {
-                            if (response?.reason === 'confirmation_required') {
+                            if (response?.reason === 'confirmation_required' && detectionKey === cancelledDetectionKey) {
                                 clearInFlightIfCurrent(detectionKey);
-                                if (cancelledDetectionKey === detectionKey) {
-                                    const cancelledResponse = { ...response, reason: 'sync_cancelled' };
-                                    lastDetectionKey = detectionKey;
-                                    lastRenderedState = { key: detectionKey, response: cancelledResponse };
-                                    renderResponseState(adapter, runner, detection, cancelledResponse, { notify: false });
-                                    return;
-                                }
-
-                                const confirmed = window.confirm(buildConfirmationMessage(detection, response));
-                                if (!confirmed) {
-                                    cancelledDetectionKey = detectionKey;
-                                    const cancelledResponse = { ...response, reason: 'sync_cancelled' };
-                                    lastDetectionKey = detectionKey;
-                                    lastRenderedState = { key: detectionKey, response: cancelledResponse };
-                                    renderResponseState(adapter, runner, detection, cancelledResponse);
-                                    return;
-                                }
-
-                                cancelledDetectionKey = '';
-                                sendDetection({ ...detection, skipConfirmation: true });
+                                clearPanel();
+                                removeFloatButton();
                                 return;
                             }
-
                             if (response?.synced) {
                                 cancelledDetectionKey = '';
                             }
