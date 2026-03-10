@@ -8,38 +8,144 @@
   </head>
   <body>
     <div id="app">
-      <header>
-        <h1>ComickSync</h1>
-      </header>
 
       <div id="loading" class="state">
-        <p>Loading...</p>
+        <div class="loader"></div>
       </div>
 
-      <div id="logged-out" class="state" hidden>
-        <p>Sign in to Comick to start syncing your reading progress.</p>
-        <button id="login-btn">Sign in to Comick</button>
-        <button id="refresh-btn" class="secondary">
-          I've already signed in
-        </button>
+      <div id="logged-out" class="state">
+        <div class="hero">
+          <div class="logo">CS</div>
+          <p>Connect your Comick account to sync chapters as you read.</p>
+        </div>
+        <button id="login-btn" class="btn-primary">Sign in to Comick</button>
+        <button id="refresh-btn" class="btn-flat">I've already signed in</button>
       </div>
 
-      <div id="logged-in" class="state" hidden>
-        <div class="user-card">
-          <span class="username" id="username"></span>
-          <span class="stats" id="stats"></span>
+      <div id="logged-in" class="state">
+        <nav class="tabs">
+          <button class="tab on" data-tab="home">Home</button>
+          <button class="tab" data-tab="library">Library</button>
+          <button class="tab" data-tab="history">History</button>
+          <button class="tab" data-tab="settings">Settings</button>
+        </nav>
+
+        <!-- HOME -->
+        <div class="panel on" data-panel="home">
+          <div class="profile">
+            <div class="profile-name" id="username"></div>
+            <div class="profile-sub" id="stats"></div>
+          </div>
+
+          <div class="nums">
+            <div class="num"><b id="follow-count">0</b> following</div>
+            <div class="num"><b id="chapters-read">0</b> chapters</div>
+            <div class="num"><b id="adapter-count">0</b> sites</div>
+          </div>
+
+          <div id="pending-section" class="queue" hidden>
+            <div class="queue-head">
+              <span><b id="pending-count">0</b> failed syncs</span>
+              <span class="queue-actions">
+                <button id="retry-all-btn" class="btn-sm">Retry</button>
+                <button id="clear-queue-btn" class="btn-sm muted">Clear</button>
+              </span>
+            </div>
+            <div id="pending-list" class="entries"></div>
+          </div>
+
+          <button id="refresh-auth-btn" class="btn-flat full">Refresh session</button>
+          <span class="ver" id="version"></span>
         </div>
-        <div class="info-row">
-          <span>Followed comics</span>
-          <span id="follow-count"></span>
+
+        <!-- LIBRARY -->
+        <div class="panel" data-panel="library">
+          <input type="text" id="library-search" class="field" placeholder="Search your library..." />
+          <div id="library-loading" class="note" hidden>Loading...</div>
+          <div id="library-empty" class="note" hidden>Nothing here yet.</div>
+          <div id="library-list" class="entries"></div>
         </div>
-        <div class="info-row">
-          <span>Pending syncs</span>
-          <span id="pending-count"></span>
+
+        <!-- HISTORY -->
+        <div class="panel" data-panel="history">
+          <div id="history-empty" class="note" hidden>No syncs yet. Go read something.</div>
+          <div id="history-list" class="entries"></div>
         </div>
-        <button id="refresh-auth-btn" class="secondary">Refresh session</button>
+
+        <!-- SETTINGS -->
+        <div class="panel" data-panel="settings">
+          <fieldset>
+            <legend>Sync</legend>
+            <label class="opt">
+              <span>Ask before syncing</span>
+              <input type="checkbox" id="setting-confirmBeforeSync" />
+            </label>
+            <label class="opt">
+              <span>Auto-retry failures</span>
+              <input type="checkbox" id="setting-autoRetryFailed" />
+            </label>
+            <label class="opt">
+              <span>Retry every</span>
+              <select id="setting-retryIntervalMinutes">
+                <option value="15">15 min</option>
+                <option value="30">30 min</option>
+                <option value="60">1 hr</option>
+                <option value="120">2 hr</option>
+              </select>
+            </label>
+            <label class="opt">
+              <span>Languages</span>
+              <input type="text" id="setting-syncLanguages" placeholder="en, gb" class="field-sm" />
+            </label>
+          </fieldset>
+
+          <fieldset>
+            <legend>Notifications</legend>
+            <label class="opt">
+              <span>Browser notifications</span>
+              <input type="checkbox" id="setting-notifications" />
+            </label>
+            <label class="opt">
+              <span>On sync</span>
+              <input type="checkbox" id="setting-notifyOnSync" />
+            </label>
+            <label class="opt">
+              <span>On error</span>
+              <input type="checkbox" id="setting-notifyOnError" />
+            </label>
+          </fieldset>
+
+          <fieldset>
+            <legend>Page overlay</legend>
+            <label class="opt">
+              <span>Show floating button</span>
+              <input type="checkbox" id="setting-floatButton" />
+            </label>
+            <label class="opt">
+              <span>Position</span>
+              <select id="setting-floatButtonPosition">
+                <option value="right">Right</option>
+                <option value="left">Left</option>
+              </select>
+            </label>
+            <label class="opt">
+              <span>Toast duration</span>
+              <input type="number" id="setting-toastDuration" min="1000" max="10000" step="200" class="field-sm" />
+            </label>
+          </fieldset>
+
+          <fieldset>
+            <legend>Data</legend>
+            <div class="opt-row">
+              <button id="export-settings-btn" class="btn-flat">Export</button>
+              <button id="import-settings-btn" class="btn-flat">Import</button>
+              <input type="file" id="import-file" accept=".json" hidden />
+            </div>
+            <button id="clear-cache-btn" class="btn-flat warn full">Clear all caches</button>
+          </fieldset>
+        </div>
       </div>
     </div>
-    <script src="popup.js"></script>
+    <script src="popup.js" type="module"></script>
   </body>
 </html>

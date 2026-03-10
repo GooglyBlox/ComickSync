@@ -1,6 +1,6 @@
 import { login, isAuthenticated, openLoginTab, watchCookieChanges } from './auth.js';
-import { searchComic, getComicBySlug, getUserFollows, getUserFollowComic, findChapter, markChapterRead } from './comick-api.js';
-import { StorageKeys, get, set, setCachedComic } from '../utils/storage.js';
+import { searchComic, getComicBySlug, getUserFollows, findChapter, markChapterRead } from './comick-api.js';
+import { StorageKeys, get, set, setCachedComic, getSettings, setSetting } from '../utils/storage.js';
 import * as logger from '../utils/logger.js';
 import { AdapterRegistry } from '../chibi/registry.js';
 import { loadAllMangaPages, clearCache } from '../chibi/loader.js';
@@ -23,12 +23,20 @@ chrome.runtime.onStartup.addListener(async () => {
 });
 
 chrome.alarms.create('refresh-adapters', { periodInMinutes: 1440 });
+chrome.alarms.create('retry-sync-queue', { periodInMinutes: 30 });
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
     if (alarm.name === 'refresh-adapters') {
         logger.info('Refreshing adapter definitions');
         await clearCache();
         await initAdapters();
+    }
+
+    if (alarm.name === 'retry-sync-queue') {
+        const settings = await getSettings();
+        if (!settings.autoRetryFailed) return;
+        logger.info('Auto-retrying failed syncs');
+        await retrySyncQueue();
     }
 });
 
@@ -101,6 +109,64 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         return true;
     }
 
+    if (message.type === 'GET_LIBRARY') {
+        getLibrary().then(sendResponse);
+        return true;
+    }
+
+    if (message.type === 'GET_SYNC_HISTORY') {
+        getSyncHistory().then((history) => sendResponse({ history }));
+        return true;
+    }
+
+    if (message.type === 'GET_SETTINGS') {
+        getSettings().then((settings) => sendResponse({ settings }));
+        return true;
+    }
+
+    if (message.type === 'SET_SETTING') {
+        setSetting(message.key, message.value)
+            .then((settings) => {
+                onSettingChanged(message.key, message.value);
+                sendResponse({ ok: true, settings });
+            });
+        return true;
+    }
+
+    if (message.type === 'IMPORT_SETTINGS') {
+        set(StorageKeys.SETTINGS, message.settings)
+            .then(() => sendResponse({ ok: true }));
+        return true;
+    }
+
+    if (message.type === 'RETRY_SYNC_QUEUE') {
+        retrySyncQueue().then(sendResponse);
+        return true;
+    }
+
+    if (message.type === 'CLEAR_SYNC_QUEUE') {
+        set(StorageKeys.SYNC_QUEUE, []).then(() => sendResponse({ ok: true }));
+        return true;
+    }
+
+    if (message.type === 'CLEAR_CACHES') {
+        Promise.all([
+            set(StorageKeys.COMIC_CACHE, {}),
+            set(StorageKeys.FOLLOWS_CACHE, {}),
+            set(StorageKeys.SYNC_HISTORY, {}),
+            set(StorageKeys.SYNC_QUEUE, []),
+        ]).then(() => sendResponse({ ok: true }));
+        return true;
+    }
+
+    if (message.type === 'GET_FLOAT_SETTINGS') {
+        getSettings().then((settings) => sendResponse({
+            enabled: settings.floatButton,
+            position: settings.floatButtonPosition,
+        }));
+        return true;
+    }
+
     return false;
 });
 
@@ -156,13 +222,19 @@ async function handleDetection(detection) {
         await markChapterRead(comic.id, chapterData.id);
         await rememberSync(comic, chapterData, detection);
         const userInfo = await get(StorageKeys.USER_INFO);
-        try {
-            const followState = await getUserFollowComic(comic.id);
-            await updateFollowsCacheEntry(userInfo?.userId ?? null, comic, followState);
-        } catch {
-            await invalidateFollowsCache(userInfo?.userId ?? null);
-        }
+        // Always invalidate follows cache after sync so the next overview
+        // page request fetches fresh data from the Comick API.
+        await invalidateFollowsCache(userInfo?.userId ?? null);
         logger.info(`Synced: "${comic.title ?? comic.slug}" Ch.${detection.episode}`);
+
+        const settings = await getSettings();
+        if (settings.notifyOnSync) {
+            showBrowserNotification(
+                comic.title ?? comic.slug,
+                `Chapter ${detection.episode} marked as read`,
+                `sync-${comic.id}-${chapterData.id}`
+            );
+        }
 
         return {
             synced: true,
@@ -176,6 +248,15 @@ async function handleDetection(detection) {
         queue.push({ ...detection, timestamp: Date.now(), error: err.message });
         await chrome.storage.local.set({ [StorageKeys.SYNC_QUEUE]: queue });
 
+        const settings = await getSettings();
+        if (settings.notifyOnError) {
+            showBrowserNotification(
+                'Sync Failed',
+                `${detection.title} Ch.${detection.episode}: ${err.message}`,
+                `error-${Date.now()}`
+            );
+        }
+
         return { synced: false, reason: 'sync_error', ...detection };
     }
 }
@@ -188,6 +269,7 @@ async function getStatus() {
         authenticated,
         userInfo,
         pendingSyncs: queue.length,
+        syncQueue: queue,
         adapterCount: registry.adapters.length,
     };
 }
@@ -340,35 +422,6 @@ async function invalidateFollowsCache(userId) {
     await set(StorageKeys.FOLLOWS_CACHE, cache);
 }
 
-async function updateFollowsCacheEntry(userId, comic, followState) {
-    if (!userId || !comic || !followState?.follow) {
-        return;
-    }
-
-    const cache = (await get(StorageKeys.FOLLOWS_CACHE)) ?? {};
-    const currentEntries = Array.isArray(cache[userId]?.data) ? cache[userId].data : [];
-    const nextEntry = {
-        ...followState.follow,
-        md_comics: {
-            id: comic.id,
-            hid: comic.hid,
-            slug: comic.slug ?? null,
-            title: comic.title ?? comic.slug ?? null,
-            last_chapter: comic.last_chapter ?? null,
-            md_titles: comic.md_titles ?? [],
-        },
-    };
-
-    const nextEntries = currentEntries.filter((entry) => entry?.md_comics?.id !== comic.id);
-    nextEntries.unshift(nextEntry);
-
-    cache[userId] = {
-        timestamp: Date.now(),
-        data: nextEntries,
-    };
-    await set(StorageKeys.FOLLOWS_CACHE, cache);
-}
-
 function toNumericChapter(value) {
     const numeric = Number(value);
     return Number.isNaN(numeric) ? null : numeric;
@@ -406,15 +459,23 @@ async function buildSeriesStatus(comic) {
     const libraryEpisode = toNumericChapter(followEntry?.md_chapters?.chap);
     const libraryLastChapter = toNumericChapter(followEntry?.md_comics?.last_chapter);
 
+    const latestReadEpisode = readEpisodes.length > 0 ? readEpisodes[readEpisodes.length - 1] : null;
+
+    // Use whichever is higher: the Comick API's last-read or our local sync history.
+    // This prevents showing stale data when the API cache hasn't refreshed yet.
+    const effectiveReadEpisode = libraryEpisode != null && latestReadEpisode != null
+        ? Math.max(libraryEpisode, latestReadEpisode)
+        : latestReadEpisode ?? libraryEpisode;
+
     return {
         comicTitle: comic.title ?? comic.slug,
         comicSlug: comic.slug ?? null,
         comicId: comic.id ?? null,
         inLibrary: Boolean(followEntry),
-        libraryEpisode,
+        libraryEpisode: effectiveReadEpisode,
         libraryLastChapter,
         chaptersRead: readEpisodes.length,
-        latestReadEpisode: readEpisodes.length > 0 ? readEpisodes[readEpisodes.length - 1] : null,
+        latestReadEpisode,
         readEpisodes,
     };
 }
@@ -441,6 +502,7 @@ async function rememberSync(comic, chapterData, detection) {
         adapterId: detection.adapterId,
         episode: detection.episode,
         identifier: detection.identifier ?? null,
+        comicTitle: comic.title ?? comic.slug ?? null,
     };
 
     const cutoff = Date.now() - (7 * 24 * 60 * 60 * 1000);
@@ -451,4 +513,88 @@ async function rememberSync(comic, chapterData, detection) {
     }
 
     await set(StorageKeys.SYNC_HISTORY, history);
+}
+
+// ─── Library ───
+
+async function getLibrary() {
+    const userInfo = await get(StorageKeys.USER_INFO);
+    const userId = userInfo?.userId ?? null;
+    if (!userId) return { library: [] };
+
+    try {
+        const follows = await getCachedFollows(userId);
+        return { library: Array.isArray(follows) ? follows : [] };
+    } catch (err) {
+        logger.error('Failed to load library:', err);
+        return { library: [] };
+    }
+}
+
+// ─── Sync Queue Retry ───
+
+async function retrySyncQueue() {
+    const queue = (await get(StorageKeys.SYNC_QUEUE)) ?? [];
+    if (queue.length === 0) return { retried: 0, succeeded: 0, failed: 0 };
+
+    // Clear queue first to prevent handleDetection from re-adding during retry
+    await set(StorageKeys.SYNC_QUEUE, []);
+
+    let succeeded = 0;
+    let failed = 0;
+    const remaining = [];
+
+    for (const item of queue) {
+        try {
+            const result = await handleDetection(item);
+            if (result?.synced) {
+                succeeded++;
+            } else {
+                remaining.push({ ...item, error: result?.reason ?? 'retry_failed', timestamp: Date.now() });
+                failed++;
+            }
+        } catch (err) {
+            remaining.push({ ...item, error: err.message, timestamp: Date.now() });
+            failed++;
+        }
+    }
+
+    // Merge any new failures that handleDetection added back with our remaining
+    const currentQueue = (await get(StorageKeys.SYNC_QUEUE)) ?? [];
+    await set(StorageKeys.SYNC_QUEUE, [...currentQueue, ...remaining]);
+    logger.info(`Retry complete: ${succeeded} succeeded, ${failed} failed`);
+    return { retried: queue.length, succeeded, failed };
+}
+
+// ─── Browser Notifications ───
+
+async function showBrowserNotification(title, message, id) {
+    const settings = await getSettings();
+    if (!settings.notifications) return;
+
+    try {
+        chrome.notifications.create(id ?? `comicksync-${Date.now()}`, {
+            type: 'basic',
+            title: title ?? 'ComickSync',
+            message: message ?? '',
+        });
+    } catch {
+        logger.warn('Failed to show notification');
+    }
+}
+
+// ─── Settings Change Handler ───
+
+function onSettingChanged(key, value) {
+    if (key === 'autoRetryFailed' || key === 'retryIntervalMinutes') {
+        getSettings().then((settings) => {
+            if (settings.autoRetryFailed) {
+                chrome.alarms.create('retry-sync-queue', {
+                    periodInMinutes: settings.retryIntervalMinutes ?? 30,
+                });
+            } else {
+                chrome.alarms.clear('retry-sync-queue');
+            }
+        });
+    }
 }

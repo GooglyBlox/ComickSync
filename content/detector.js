@@ -3,6 +3,7 @@
     const PANEL_ID = 'comicksync-inline-panel';
     const STYLE_ID = 'comicksync-inline-style';
     const TOAST_ID = 'comicksync-toast';
+    const FLOAT_ID = 'comicksync-float-btn';
     const DEBUG = false;
     const LOG_PREFIX = '[ComickSync][content]';
     const TOAST_DURATION_MS = 2600;
@@ -13,6 +14,9 @@
     let lastRenderedState = null;
     let lastToastKey = '';
     let toastTimer = null;
+    let floatSettings = null;
+    let floatLastDetection = null;
+    let floatLastResponse = null;
 
     function log(...args) {
         if (!DEBUG) {
@@ -133,21 +137,110 @@
                 right: 16px;
                 bottom: 16px;
                 z-index: 2147483647;
-                max-width: 320px;
-                padding: 10px 12px;
-                border: 1px solid currentColor;
-                background: rgba(20, 24, 30, 0.92);
-                color: #fff;
-                font: 12px/1.4 inherit;
+                max-width: 280px;
+                padding: 7px 10px;
+                border: 1px solid rgba(255,255,255,0.1);
+                border-radius: 4px;
+                background: #1b1b1f;
+                color: #d5d5d5;
+                font: 12px/1.4 "Segoe UI", system-ui, sans-serif;
                 opacity: 0;
-                transform: translateY(8px);
-                transition: opacity 140ms ease, transform 140ms ease;
+                transform: translateY(4px);
+                transition: opacity 100ms, transform 100ms;
                 pointer-events: none;
             }
 
             #${TOAST_ID}.is-visible {
                 opacity: 1;
                 transform: translateY(0);
+            }
+
+            #${FLOAT_ID} {
+                position: fixed;
+                bottom: 80px;
+                z-index: 2147483646;
+                width: 32px;
+                height: 32px;
+                border-radius: 4px;
+                background: #1b1b1f;
+                border: 1px solid #333;
+                color: #999;
+                cursor: pointer;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                box-shadow: 0 1px 6px rgba(0,0,0,0.4);
+                transition: border-color 0.1s, color 0.1s;
+                user-select: none;
+            }
+
+            #${FLOAT_ID}.is-right { right: 16px; }
+            #${FLOAT_ID}.is-left { left: 16px; }
+
+            #${FLOAT_ID}:hover {
+                border-color: #555;
+                color: #d5d5d5;
+            }
+
+            #${FLOAT_ID}.is-synced {
+                border-color: #5a5;
+                color: #5a5;
+            }
+
+            #${FLOAT_ID}.is-error {
+                border-color: #a55;
+                color: #a55;
+            }
+
+            #${FLOAT_ID} .float-popup {
+                display: none;
+                position: absolute;
+                bottom: 40px;
+                background: #1b1b1f;
+                border: 1px solid #333;
+                border-radius: 4px;
+                padding: 8px 10px;
+                min-width: 160px;
+                max-width: 240px;
+                color: #d5d5d5;
+                font: 12px/1.4 "Segoe UI", system-ui, sans-serif;
+                box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+            }
+
+            #${FLOAT_ID}.is-right .float-popup { right: 0; }
+            #${FLOAT_ID}.is-left .float-popup { left: 0; }
+
+            #${FLOAT_ID}.is-expanded .float-popup {
+                display: block;
+            }
+
+            #${FLOAT_ID} .float-popup-title {
+                font-weight: 600;
+                font-size: 12px;
+                color: #fff;
+                margin-bottom: 2px;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+
+            #${FLOAT_ID} .float-popup-meta {
+                color: #888;
+                font-size: 11px;
+            }
+
+            #${FLOAT_ID} .float-popup-link {
+                display: inline-block;
+                margin-top: 4px;
+                color: #d5d5d5;
+                text-decoration: underline;
+                text-underline-offset: 2px;
+                text-decoration-color: #555;
+                font-size: 11px;
+            }
+
+            #${FLOAT_ID} .float-popup-link:hover {
+                text-decoration-color: #d5d5d5;
             }
 
         `;
@@ -356,6 +449,10 @@
         const pageType = detection.pageType;
         const shouldNotify = options.notify !== false;
 
+        floatLastDetection = detection;
+        floatLastResponse = response;
+        updateFloatButton(detection, response);
+
         if (pageType === 'sync' && response?.synced) {
             clearPanel();
             applyChapterIndicators(runner, response);
@@ -510,6 +607,98 @@
         }
     }
 
+    // ─── Float Button ───
+
+    function getFloatButton() {
+        let btn = document.getElementById(FLOAT_ID);
+        if (!btn) {
+            btn = document.createElement('div');
+            btn.id = FLOAT_ID;
+            btn.innerHTML = `
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/>
+                    <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>
+                </svg>
+                <div class="float-popup">
+                    <div class="float-popup-title"></div>
+                    <div class="float-popup-meta"></div>
+                </div>
+            `;
+            btn.addEventListener('click', (e) => {
+                if (e.target.closest('.float-popup-link')) return;
+                btn.classList.toggle('is-expanded');
+            });
+            document.documentElement.appendChild(btn);
+        }
+        return btn;
+    }
+
+    function removeFloatButton() {
+        document.getElementById(FLOAT_ID)?.remove();
+    }
+
+    function updateFloatButton(detection, response) {
+        if (!floatSettings?.enabled) {
+            removeFloatButton();
+            return;
+        }
+
+        ensureStyle();
+        const btn = getFloatButton();
+        const position = floatSettings.position ?? 'right';
+        btn.classList.remove('is-right', 'is-left', 'is-synced', 'is-error');
+        btn.classList.add(position === 'left' ? 'is-left' : 'is-right');
+
+        const title = response?.comicTitle ?? detection?.title ?? '';
+        const popupTitle = btn.querySelector('.float-popup-title');
+        const popupMeta = btn.querySelector('.float-popup-meta');
+
+        if (!detection) {
+            removeFloatButton();
+            return;
+        }
+
+        if (response?.synced) {
+            btn.classList.add('is-synced');
+            if (popupTitle) popupTitle.textContent = title;
+            if (popupMeta) {
+                const slug = response.comicSlug;
+                const chInfo = response.libraryEpisode != null
+                    ? `Ch. ${response.libraryEpisode}${response.libraryLastChapter ? ` / ${response.libraryLastChapter}` : ''}`
+                    : `Ch. ${detection.episode} synced`;
+                popupMeta.innerHTML = escapeHtml(chInfo)
+                    + (slug ? `<br><a class="float-popup-link" href="https://comick.dev/comic/${escapeHtml(slug)}" target="_blank">View on Comick</a>` : '');
+            }
+        } else if (response?.matched) {
+            const slug = response.comicSlug;
+            const chInfo = response.libraryEpisode != null
+                ? `Reading: Ch. ${response.libraryEpisode}${response.libraryLastChapter ? ` / ${response.libraryLastChapter}` : ''}`
+                : response.inLibrary ? 'In your library' : 'Not in library';
+            if (popupTitle) popupTitle.textContent = title;
+            if (popupMeta) {
+                popupMeta.innerHTML = escapeHtml(chInfo)
+                    + (slug ? `<br><a class="float-popup-link" href="https://comick.dev/comic/${escapeHtml(slug)}" target="_blank">View on Comick</a>` : '');
+            }
+        } else if (response?.reason) {
+            btn.classList.add('is-error');
+            if (popupTitle) popupTitle.textContent = title || 'Unknown';
+            if (popupMeta) popupMeta.textContent = response.reason === 'comic_not_found' ? 'Not found on Comick' :
+                response.reason === 'chapter_not_found' ? `Ch. ${detection.episode} not on Comick` :
+                response.reason === 'not_authenticated' ? 'Not signed in' : 'Sync error';
+        } else {
+            removeFloatButton();
+        }
+    }
+
+    function loadFloatSettings() {
+        chrome.runtime.sendMessage({ type: 'GET_FLOAT_SETTINGS' }, (response) => {
+            if (chrome.runtime.lastError) return;
+            floatSettings = response ?? { enabled: true, position: 'right' };
+        });
+    }
+
+    loadFloatSettings();
+
     async function getRunnerModule() {
         if (!runnerPromise) {
             log('Loading evaluator module');
@@ -542,6 +731,7 @@
                 log('No matching adapter or runtime error', chrome.runtime.lastError?.message ?? null, adapterResponse);
                 clearPanel();
                 clearChapterIndicators();
+                removeFloatButton();
                 return;
             }
 
@@ -689,9 +879,12 @@
             inFlightDetectionKey = '';
             lastRenderedState = null;
             lastToastKey = '';
+            floatLastDetection = null;
+            floatLastResponse = null;
             clearPanel();
             clearChapterIndicators();
             clearToast();
+            removeFloatButton();
             debouncedDetect();
         }
     }, 1000);

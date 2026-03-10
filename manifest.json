@@ -9,7 +9,8 @@
         "storage",
         "tabs",
         "scripting",
-        "alarms"
+        "alarms",
+        "notifications"
     ],
     "host_permissions": [
         "*://comick.dev/*",
@@ -33,7 +34,8 @@
     "web_accessible_resources": [
         {
             "resources": [
-                "chibi/evaluator.js"
+                "chibi/evaluator.js",
+                "icons/icon128.png"
             ],
             "matches": ["<all_urls>"]
         }
