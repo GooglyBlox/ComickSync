@@ -1,4 +1,21 @@
 const $ = (s) => document.getElementById(s);
+const SETTINGS_FIELD_TYPES = {
+    confirmBeforeSync: 'checkbox',
+    autoRetryFailed: 'checkbox',
+    retryIntervalMinutes: 'select',
+    syncLanguages: 'text',
+    notifications: 'checkbox',
+    notifyOnSync: 'checkbox',
+    notifyOnError: 'checkbox',
+    floatButton: 'checkbox',
+    floatButtonPosition: 'select',
+    toastDuration: 'number',
+};
+const PANELS_WITH_LOADERS = {
+    library: loadLibrary,
+    history: loadHistory,
+    settings: loadSettings,
+};
 
 const loadingEl = $('loading');
 const loggedOutEl = $('logged-out');
@@ -34,19 +51,6 @@ function showState(s) {
     loggedInEl.classList.toggle('on', s === 'logged-in');
 }
 
-// tabs
-document.querySelectorAll('.tab').forEach((tab) => {
-    tab.addEventListener('click', () => {
-        document.querySelectorAll('.tab').forEach((t) => t.classList.remove('on'));
-        document.querySelectorAll('.panel').forEach((p) => p.classList.remove('on'));
-        tab.classList.add('on');
-        document.querySelector(`.panel[data-panel="${tab.dataset.tab}"]`).classList.add('on');
-        if (tab.dataset.tab === 'library') loadLibrary();
-        if (tab.dataset.tab === 'history') loadHistory();
-        if (tab.dataset.tab === 'settings') loadSettings();
-    });
-});
-
 function esc(s) {
     return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
@@ -64,6 +68,36 @@ function msg(m) {
     return new Promise((resolve) => chrome.runtime.sendMessage(m, resolve));
 }
 
+function setText(element, value) {
+    if (element) {
+        element.textContent = value;
+    }
+}
+
+function withDisabledButton(button, label, task) {
+    return (async () => {
+        const originalText = button.textContent;
+        button.disabled = true;
+        button.textContent = label;
+        try {
+            await task();
+        } finally {
+            button.disabled = false;
+            button.textContent = originalText;
+        }
+    })();
+}
+
+function openComickSeries(slug) {
+    if (slug) {
+        chrome.tabs.create({ url: `https://comick.dev/comic/${slug}` });
+    }
+}
+
+function bindClick(id, handler) {
+    $(id)?.addEventListener('click', handler);
+}
+
 // ── home ──
 
 async function loadStatus() {
@@ -72,12 +106,12 @@ async function loadStatus() {
     if (!status?.authenticated) { showState('logged-out'); return; }
 
     const info = status.userInfo;
-    usernameEl.textContent = info.username;
-    statsEl.textContent = info.chapterCount?.toLocaleString() + ' chapters read on Comick';
-    followCountEl.textContent = (info.followCount ?? 0).toLocaleString();
-    chaptersReadEl.textContent = (info.chapterCount ?? 0).toLocaleString();
-    adapterCountEl.textContent = (status.adapterCount ?? 0).toLocaleString();
-    pendingCountEl.textContent = (status.pendingSyncs ?? 0).toString();
+    setText(usernameEl, info.username);
+    setText(statsEl, `${info.chapterCount?.toLocaleString()} chapters read on Comick`);
+    setText(followCountEl, (info.followCount ?? 0).toLocaleString());
+    setText(chaptersReadEl, (info.chapterCount ?? 0).toLocaleString());
+    setText(adapterCountEl, (status.adapterCount ?? 0).toLocaleString());
+    setText(pendingCountEl, (status.pendingSyncs ?? 0).toString());
 
     if (status.pendingSyncs > 0) {
         pendingSection.hidden = false;
@@ -86,7 +120,7 @@ async function loadStatus() {
         pendingSection.hidden = true;
     }
 
-    versionEl.textContent = 'v' + chrome.runtime.getManifest().version;
+    setText(versionEl, `v${chrome.runtime.getManifest().version}`);
     showState('logged-in');
 }
 
@@ -144,9 +178,7 @@ function renderLibrary(items) {
     }).join('');
 
     libraryList.querySelectorAll('.entry.click').forEach((el) => {
-        el.addEventListener('click', () => {
-            if (el.dataset.slug) chrome.tabs.create({ url: `https://comick.dev/comic/${el.dataset.slug}` });
-        });
+        el.addEventListener('click', () => openComickSeries(el.dataset.slug));
     });
 }
 
@@ -181,34 +213,50 @@ async function loadHistory() {
 
 // ── settings ──
 
-const STYPES = {
-    confirmBeforeSync: 'checkbox', autoRetryFailed: 'checkbox',
-    retryIntervalMinutes: 'select', syncLanguages: 'text',
-    notifications: 'checkbox', notifyOnSync: 'checkbox', notifyOnError: 'checkbox',
-    floatButton: 'checkbox', floatButtonPosition: 'select', toastDuration: 'number',
-};
+function getSettingElement(key) {
+    return $(`setting-${key}`);
+}
+
+function readSettingValue(key, type, element) {
+    if (type === 'checkbox') {
+        return element.checked;
+    }
+    if (key === 'syncLanguages') {
+        return element.value.split(',').map((s) => s.trim()).filter(Boolean);
+    }
+    if (type === 'number') {
+        return Number(element.value);
+    }
+    return element.value;
+}
+
+function writeSettingValue(key, type, element, value) {
+    if (type === 'checkbox') {
+        element.checked = value ?? false;
+        return;
+    }
+    if (key === 'syncLanguages') {
+        element.value = Array.isArray(value) ? value.join(', ') : '';
+        return;
+    }
+    element.value = value ?? '';
+}
 
 async function loadSettings() {
     const r = await msg({ type: 'GET_SETTINGS' });
     cachedSettings = r?.settings ?? {};
-    for (const [k, t] of Object.entries(STYPES)) {
-        const el = $('setting-' + k);
+    for (const [k, t] of Object.entries(SETTINGS_FIELD_TYPES)) {
+        const el = getSettingElement(k);
         if (!el) continue;
-        if (t === 'checkbox') el.checked = cachedSettings[k] ?? false;
-        else if (k === 'syncLanguages') el.value = Array.isArray(cachedSettings[k]) ? cachedSettings[k].join(', ') : '';
-        else el.value = cachedSettings[k] ?? '';
+        writeSettingValue(k, t, el, cachedSettings[k]);
     }
 }
 
-for (const [k, t] of Object.entries(STYPES)) {
-    const el = $('setting-' + k);
+for (const [k, t] of Object.entries(SETTINGS_FIELD_TYPES)) {
+    const el = getSettingElement(k);
     if (!el) continue;
     el.addEventListener('change', () => {
-        let v;
-        if (t === 'checkbox') v = el.checked;
-        else if (k === 'syncLanguages') v = el.value.split(',').map((s) => s.trim()).filter(Boolean);
-        else if (t === 'number') v = Number(el.value);
-        else v = el.value;
+        const v = readSettingValue(k, t, el);
         cachedSettings[k] = v;
         msg({ type: 'SET_SETTING', key: k, value: v });
     });
@@ -245,12 +293,10 @@ clearCacheBtn.addEventListener('click', async () => {
 // ── queue actions ──
 
 retryAllBtn.addEventListener('click', async () => {
-    retryAllBtn.disabled = true;
-    retryAllBtn.textContent = '...';
-    await msg({ type: 'RETRY_SYNC_QUEUE' });
-    await loadStatus();
-    retryAllBtn.disabled = false;
-    retryAllBtn.textContent = 'Retry';
+    await withDisabledButton(retryAllBtn, '...', async () => {
+        await msg({ type: 'RETRY_SYNC_QUEUE' });
+        await loadStatus();
+    });
 });
 
 clearQueueBtn.addEventListener('click', async () => {
@@ -260,16 +306,25 @@ clearQueueBtn.addEventListener('click', async () => {
 
 // ── auth ──
 
-$('login-btn').addEventListener('click', () => msg({ type: 'LOGIN' }));
-
-$('refresh-btn').addEventListener('click', async () => {
+async function refreshAuth() {
     const r = await msg({ type: 'REFRESH_AUTH' });
-    if (r?.ok) loadStatus();
+    if (r?.ok) {
+        loadStatus();
+    }
+}
+
+document.querySelectorAll('.tab').forEach((tab) => {
+    tab.addEventListener('click', () => {
+        document.querySelectorAll('.tab').forEach((t) => t.classList.remove('on'));
+        document.querySelectorAll('.panel').forEach((p) => p.classList.remove('on'));
+        tab.classList.add('on');
+        document.querySelector(`.panel[data-panel="${tab.dataset.tab}"]`).classList.add('on');
+        PANELS_WITH_LOADERS[tab.dataset.tab]?.();
+    });
 });
 
-$('refresh-auth-btn').addEventListener('click', async () => {
-    const r = await msg({ type: 'REFRESH_AUTH' });
-    if (r?.ok) loadStatus();
-});
+bindClick('login-btn', () => msg({ type: 'LOGIN' }));
+bindClick('refresh-btn', refreshAuth);
+bindClick('refresh-auth-btn', refreshAuth);
 
 loadStatus();

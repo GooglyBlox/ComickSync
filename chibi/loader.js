@@ -9,6 +9,14 @@ const PAGE_LIST_CACHE_KEY = 'malsync_page_list';
 const PAGES_CACHE_KEY = 'malsync_pages_cache';
 const CACHE_DURATION = 24 * 60 * 60 * 1000;
 
+function isFresh(timestamp) {
+    return Date.now() - timestamp < CACHE_DURATION;
+}
+
+function withTimestamp(data) {
+    return { data, timestamp: Date.now() };
+}
+
 async function fetchJson(url) {
     try {
         const response = await fetch(url);
@@ -40,7 +48,7 @@ function mergePageLists(pageLists) {
 
 async function loadPageList() {
     const cached = await get(PAGE_LIST_CACHE_KEY);
-    if (cached && Date.now() - cached.timestamp < CACHE_DURATION) {
+    if (cached && isFresh(cached.timestamp)) {
         return cached.data;
     }
 
@@ -54,7 +62,7 @@ async function loadPageList() {
     const availableLists = pageLists.filter(Boolean);
     if (availableLists.length > 0) {
         const data = mergePageLists(availableLists);
-        await set(PAGE_LIST_CACHE_KEY, { data, timestamp: Date.now() });
+        await set(PAGE_LIST_CACHE_KEY, withTimestamp(data));
         return data;
     }
 
@@ -65,7 +73,7 @@ async function loadPageDefinition(pageKey, meta = null) {
     const cache = (await get(PAGES_CACHE_KEY)) ?? {};
     const cachedEntry = cache[pageKey];
 
-    if (cachedEntry && Date.now() - cachedEntry.timestamp < CACHE_DURATION) {
+    if (cachedEntry && isFresh(cachedEntry.timestamp)) {
         return cachedEntry.data;
     }
 
@@ -84,7 +92,7 @@ async function loadPageDefinition(pageKey, meta = null) {
     }
 
     if (data) {
-        cache[pageKey] = { data, timestamp: Date.now() };
+        cache[pageKey] = withTimestamp(data);
         await set(PAGES_CACHE_KEY, cache);
     }
 

@@ -1,6 +1,15 @@
 import { CompiledPageRunner } from './evaluator.js';
 import * as logger from '../utils/logger.js';
 
+function patternToRegex(pattern) {
+    const escaped = String(pattern)
+        .split('*')
+        .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&'))
+        .join('.*');
+
+    return new RegExp(`^${escaped}$`);
+}
+
 class AdapterRegistry {
     constructor() {
         this.adapters = [];
@@ -59,13 +68,8 @@ class AdapterRegistry {
 
     matchesUrl(adapter, url) {
         return adapter.matchPatterns.some((pattern) => {
-            const escaped = String(pattern)
-                .split('*')
-                .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&'))
-                .join('.*');
-
             try {
-                return new RegExp(`^${escaped}$`).test(url);
+                return patternToRegex(pattern).test(url);
             } catch {
                 return false;
             }

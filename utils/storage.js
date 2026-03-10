@@ -24,6 +24,7 @@ const DEFAULT_SETTINGS = {
 };
 
 const SETTINGS_MIGRATION_VERSION = 1;
+const COMIC_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 async function get(key) {
     const result = await chrome.storage.local.get(key);
@@ -43,8 +44,7 @@ async function getCachedComic(slug) {
     const entry = cache[slug];
     if (!entry) return null;
 
-    const ONE_WEEK = 7 * 24 * 60 * 60 * 1000;
-    if (Date.now() - entry.timestamp > ONE_WEEK) {
+    if (Date.now() - entry.timestamp > COMIC_CACHE_TTL_MS) {
         delete cache[slug];
         await set(StorageKeys.COMIC_CACHE, cache);
         return null;

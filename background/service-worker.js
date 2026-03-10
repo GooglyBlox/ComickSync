@@ -7,6 +7,29 @@ import { loadAllMangaPages, clearCache } from '../chibi/loader.js';
 
 const registry = new AdapterRegistry();
 const FOLLOWS_CACHE_DURATION = 30 * 1000;
+const RETRY_SYNC_ALARM = 'retry-sync-queue';
+const REFRESH_ADAPTERS_ALARM = 'refresh-adapters';
+const SYNC_HISTORY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const DUPLICATE_SYNC_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+function respond(sendResponse, createResponse, fallbackResponse) {
+    Promise.resolve()
+        .then(createResponse)
+        .then(sendResponse)
+        .catch((error) => {
+            logger.error('Background message error:', error);
+            sendResponse(fallbackResponse(error));
+        });
+}
+
+function clearRuntimeCaches() {
+    return Promise.all([
+        set(StorageKeys.COMIC_CACHE, {}),
+        set(StorageKeys.FOLLOWS_CACHE, {}),
+        set(StorageKeys.SYNC_HISTORY, {}),
+        set(StorageKeys.SYNC_QUEUE, []),
+    ]);
+}
 
 async function initAdapters() {
     const definitions = await loadAllMangaPages();
@@ -22,17 +45,17 @@ chrome.runtime.onStartup.addListener(async () => {
     await Promise.all([login(), initAdapters(), migrateSettings()]);
 });
 
-chrome.alarms.create('refresh-adapters', { periodInMinutes: 1440 });
-chrome.alarms.create('retry-sync-queue', { periodInMinutes: 30 });
+chrome.alarms.create(REFRESH_ADAPTERS_ALARM, { periodInMinutes: 1440 });
+chrome.alarms.create(RETRY_SYNC_ALARM, { periodInMinutes: 30 });
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
-    if (alarm.name === 'refresh-adapters') {
+    if (alarm.name === REFRESH_ADAPTERS_ALARM) {
         logger.info('Refreshing adapter definitions');
         await clearCache();
         await initAdapters();
     }
 
-    if (alarm.name === 'retry-sync-queue') {
+    if (alarm.name === RETRY_SYNC_ALARM) {
         const settings = await getSettings();
         if (!settings.autoRetryFailed) return;
         logger.info('Auto-retrying failed syncs');
@@ -44,56 +67,61 @@ watchCookieChanges();
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === 'GET_MATCHING_ADAPTER') {
-        getMatchingAdapter(message.url)
-            .then((adapter) => sendResponse({ adapter }))
-            .catch((err) => {
-                logger.error('Get matching adapter error:', err);
-                sendResponse({ adapter: null, error: err.message });
-            });
+        respond(sendResponse, async () => ({ adapter: await getMatchingAdapter(message.url) }), (error) => ({
+            adapter: null,
+            error: error.message,
+        }));
         return true;
     }
 
     if (message.type === 'SYNC_DETECTION') {
-        handleDetection(message.detection)
-            .then(sendResponse)
-            .catch((err) => {
-                logger.error('Sync detection error:', err);
-                sendResponse({ synced: false, error: err.message });
-            });
+        respond(sendResponse, () => handleDetection(message.detection), (error) => ({
+            synced: false,
+            error: error.message,
+        }));
         return true;
     }
 
     if (message.type === 'RESOLVE_SERIES') {
-        resolveSeries(message.detection)
-            .then(sendResponse)
-            .catch((err) => {
-                logger.error('Resolve series error:', err);
-                sendResponse({ matched: false, error: err.message });
-            });
+        respond(sendResponse, () => resolveSeries(message.detection), (error) => ({
+            matched: false,
+            error: error.message,
+        }));
         return true;
     }
 
     if (message.type === 'GET_STATUS') {
-        getStatus().then(sendResponse);
+        respond(sendResponse, () => getStatus(), () => ({
+            authenticated: false,
+            pendingSyncs: 0,
+            syncQueue: [],
+            adapterCount: registry.adapters.length,
+        }));
         return true;
     }
 
     if (message.type === 'LOGIN') {
-        openLoginTab().then(() => sendResponse({ ok: true }));
+        respond(sendResponse, async () => {
+            await openLoginTab();
+            return { ok: true };
+        }, () => ({ ok: false }));
         return true;
     }
 
     if (message.type === 'REFRESH_AUTH') {
-        login().then((userInfo) => sendResponse({ ok: !!userInfo, userInfo }));
+        respond(sendResponse, async () => {
+            const userInfo = await login();
+            return { ok: !!userInfo, userInfo };
+        }, () => ({ ok: false, userInfo: null }));
         return true;
     }
 
     if (message.type === 'REFRESH_ADAPTERS') {
-        clearCache()
-            .then(() => initAdapters())
-            .then(() => {
-                sendResponse({ ok: true, count: registry.adapters.length });
-            });
+        respond(sendResponse, async () => {
+            await clearCache();
+            await initAdapters();
+            return { ok: true, count: registry.adapters.length };
+        }, () => ({ ok: false, count: registry.adapters.length }));
         return true;
     }
 
@@ -110,60 +138,66 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     }
 
     if (message.type === 'GET_LIBRARY') {
-        getLibrary().then(sendResponse);
+        respond(sendResponse, () => getLibrary(), () => ({ library: [] }));
         return true;
     }
 
     if (message.type === 'GET_SYNC_HISTORY') {
-        getSyncHistory().then((history) => sendResponse({ history }));
+        respond(sendResponse, async () => ({ history: await getSyncHistory() }), () => ({ history: {} }));
         return true;
     }
 
     if (message.type === 'GET_SETTINGS') {
-        getSettings().then((settings) => sendResponse({ settings }));
+        respond(sendResponse, async () => ({ settings: await getSettings() }), () => ({ settings: {} }));
         return true;
     }
 
     if (message.type === 'SET_SETTING') {
-        setSetting(message.key, message.value)
-            .then((settings) => {
-                onSettingChanged(message.key, message.value);
-                sendResponse({ ok: true, settings });
-            });
+        respond(sendResponse, async () => {
+            const settings = await setSetting(message.key, message.value);
+            onSettingChanged(message.key, message.value);
+            return { ok: true, settings };
+        }, () => ({ ok: false }));
         return true;
     }
 
     if (message.type === 'IMPORT_SETTINGS') {
-        set(StorageKeys.SETTINGS, message.settings)
-            .then(() => sendResponse({ ok: true }));
+        respond(sendResponse, async () => {
+            await set(StorageKeys.SETTINGS, message.settings);
+            return { ok: true };
+        }, () => ({ ok: false }));
         return true;
     }
 
     if (message.type === 'RETRY_SYNC_QUEUE') {
-        retrySyncQueue().then(sendResponse);
+        respond(sendResponse, () => retrySyncQueue(), () => ({ retried: 0, succeeded: 0, failed: 0 }));
         return true;
     }
 
     if (message.type === 'CLEAR_SYNC_QUEUE') {
-        set(StorageKeys.SYNC_QUEUE, []).then(() => sendResponse({ ok: true }));
+        respond(sendResponse, async () => {
+            await set(StorageKeys.SYNC_QUEUE, []);
+            return { ok: true };
+        }, () => ({ ok: false }));
         return true;
     }
 
     if (message.type === 'CLEAR_CACHES') {
-        Promise.all([
-            set(StorageKeys.COMIC_CACHE, {}),
-            set(StorageKeys.FOLLOWS_CACHE, {}),
-            set(StorageKeys.SYNC_HISTORY, {}),
-            set(StorageKeys.SYNC_QUEUE, []),
-        ]).then(() => sendResponse({ ok: true }));
+        respond(sendResponse, async () => {
+            await clearRuntimeCaches();
+            return { ok: true };
+        }, () => ({ ok: false }));
         return true;
     }
 
     if (message.type === 'GET_FLOAT_SETTINGS') {
-        getSettings().then((settings) => sendResponse({
-            enabled: settings.floatButton,
-            position: settings.floatButtonPosition,
-        }));
+        respond(sendResponse, async () => {
+            const settings = await getSettings();
+            return {
+                enabled: settings.floatButton,
+                position: settings.floatButtonPosition,
+            };
+        }, () => ({ enabled: true, position: 'right' }));
         return true;
     }
 
@@ -518,8 +552,7 @@ async function isDuplicateSync(comic, chapterData, detection) {
         return false;
     }
 
-    const oneDay = 24 * 60 * 60 * 1000;
-    return Date.now() - previous.timestamp < oneDay
+    return Date.now() - previous.timestamp < DUPLICATE_SYNC_WINDOW_MS
         && previous.episode === detection.episode
         && previous.adapterId === detection.adapterId;
 }
@@ -535,7 +568,7 @@ async function rememberSync(comic, chapterData, detection) {
         comicTitle: comic.title ?? comic.slug ?? null,
     };
 
-    const cutoff = Date.now() - (7 * 24 * 60 * 60 * 1000);
+    const cutoff = Date.now() - SYNC_HISTORY_RETENTION_MS;
     for (const [entryKey, value] of Object.entries(history)) {
         if ((value?.timestamp ?? 0) < cutoff) {
             delete history[entryKey];
@@ -619,11 +652,11 @@ function onSettingChanged(key, value) {
     if (key === 'autoRetryFailed' || key === 'retryIntervalMinutes') {
         getSettings().then((settings) => {
             if (settings.autoRetryFailed) {
-                chrome.alarms.create('retry-sync-queue', {
+                chrome.alarms.create(RETRY_SYNC_ALARM, {
                     periodInMinutes: settings.retryIntervalMinutes ?? 30,
                 });
             } else {
-                chrome.alarms.clear('retry-sync-queue');
+                chrome.alarms.clear(RETRY_SYNC_ALARM);
             }
         });
     }

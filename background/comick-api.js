@@ -3,6 +3,13 @@ import { getCachedComic, setCachedComic } from '../utils/storage.js';
 
 const API_BASE = 'https://api.comick.dev';
 const DEFAULT_LANGS = ['en', 'gb', null];
+const EXACT_CHAPTER_LIMIT = 300;
+const FALLBACK_CHAPTER_LIMIT = 100;
+const FALLBACK_PAGE_SCAN_LIMIT = 3;
+
+function buildUniqueLanguageList(languages) {
+    return [...new Set([...(languages ?? []), ...DEFAULT_LANGS])];
+}
 
 function normalizeComic(payload) {
     if (!payload || typeof payload !== 'object') {
@@ -82,7 +89,7 @@ async function getComicBySlug(slug) {
 
 async function getChapters(hid, options = {}) {
     const params = new URLSearchParams({
-        limit: String(options.limit ?? 300),
+        limit: String(options.limit ?? EXACT_CHAPTER_LIMIT),
         tachiyomi: 'true',
     });
     if (options.lang) params.set('lang', options.lang);
@@ -149,7 +156,7 @@ function rankChapterCandidates(chapters = []) {
 
 async function findChapter(hid, chapterNumber, languages = DEFAULT_LANGS) {
     const tried = new Set();
-    const languageCandidates = [...new Set([...(languages ?? []), ...DEFAULT_LANGS])];
+    const languageCandidates = buildUniqueLanguageList(languages);
     const normalizedChapterNumber = normalizeChapterNumber(chapterNumber);
 
     for (const lang of languageCandidates) {
@@ -160,7 +167,7 @@ async function findChapter(hid, chapterNumber, languages = DEFAULT_LANGS) {
         const data = await getChapters(hid, {
             lang: lang ?? undefined,
             chap: chapterNumber,
-            limit: 300,
+            limit: EXACT_CHAPTER_LIMIT,
         });
 
         const chapters = Array.isArray(data?.chapters) ? data.chapters : [];
@@ -173,14 +180,14 @@ async function findChapter(hid, chapterNumber, languages = DEFAULT_LANGS) {
     // Some chapters are not returned by the exact `chap` filter even though they
     // exist in the paginated chapter list, so scan the first few pages as a fallback.
     for (const lang of languageCandidates) {
-        for (let page = 1; page <= 3; page++) {
+        for (let page = 1; page <= FALLBACK_PAGE_SCAN_LIMIT; page++) {
             const requestKey = `${lang ?? 'any'}:page:${page}`;
             if (tried.has(requestKey)) continue;
             tried.add(requestKey);
 
             const data = await getChapters(hid, {
                 lang: lang ?? undefined,
-                limit: 100,
+                limit: FALLBACK_CHAPTER_LIMIT,
                 page,
             });
 
@@ -200,7 +207,7 @@ async function findChapter(hid, chapterNumber, languages = DEFAULT_LANGS) {
                 }
             }
 
-            if (chapters.length < 100) {
+            if (chapters.length < FALLBACK_CHAPTER_LIMIT) {
                 break;
             }
         }
