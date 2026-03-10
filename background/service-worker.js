@@ -1,6 +1,6 @@
 import { login, isAuthenticated, openLoginTab, watchCookieChanges } from './auth.js';
 import { searchComic, getComicBySlug, getUserFollows, findChapter, markChapterRead } from './comick-api.js';
-import { StorageKeys, get, set, setCachedComic, getSettings, setSetting } from '../utils/storage.js';
+import { StorageKeys, get, set, setCachedComic, getSettings, migrateSettings, setSetting } from '../utils/storage.js';
 import * as logger from '../utils/logger.js';
 import { AdapterRegistry } from '../chibi/registry.js';
 import { loadAllMangaPages, clearCache } from '../chibi/loader.js';
@@ -15,11 +15,11 @@ async function initAdapters() {
 
 chrome.runtime.onInstalled.addListener(async () => {
     logger.info('Extension installed');
-    await Promise.all([login(), initAdapters()]);
+    await Promise.all([login(), initAdapters(), migrateSettings()]);
 });
 
 chrome.runtime.onStartup.addListener(async () => {
-    await Promise.all([login(), initAdapters()]);
+    await Promise.all([login(), initAdapters(), migrateSettings()]);
 });
 
 chrome.alarms.create('refresh-adapters', { periodInMinutes: 1440 });
@@ -198,7 +198,8 @@ async function handleDetection(detection) {
             return { synced: false, reason: 'comic_not_found', ...detection };
         }
 
-        const chapterData = await findChapter(comic.hid, detection.episode);
+        const settings = await getSettings();
+        const chapterData = await findChapter(comic.hid, detection.episode, settings.syncLanguages);
         if (!chapterData) {
             logger.warn(`Chapter ${detection.episode} not found for ${comic.title ?? comic.slug}`);
             return {
@@ -219,6 +220,17 @@ async function handleDetection(detection) {
             };
         }
 
+        const seriesStatus = await buildSeriesStatus(comic);
+        if (shouldConfirmBeforeSync(settings, detection, seriesStatus)) {
+            logger.info(`Confirmation required before syncing "${comic.title ?? comic.slug}" Ch.${detection.episode}`);
+            return {
+                synced: false,
+                reason: 'confirmation_required',
+                ...detection,
+                ...seriesStatus,
+            };
+        }
+
         await markChapterRead(comic.id, chapterData.id);
         await rememberSync(comic, chapterData, detection);
         const userInfo = await get(StorageKeys.USER_INFO);
@@ -227,7 +239,6 @@ async function handleDetection(detection) {
         await invalidateFollowsCache(userInfo?.userId ?? null);
         logger.info(`Synced: "${comic.title ?? comic.slug}" Ch.${detection.episode}`);
 
-        const settings = await getSettings();
         if (settings.notifyOnSync) {
             showBrowserNotification(
                 comic.title ?? comic.slug,
@@ -259,6 +270,25 @@ async function handleDetection(detection) {
 
         return { synced: false, reason: 'sync_error', ...detection };
     }
+}
+
+function shouldConfirmBeforeSync(settings, detection, seriesStatus) {
+    if (!settings?.confirmBeforeSync || detection?.skipConfirmation) {
+        return false;
+    }
+
+    return isStartingNewSeries(seriesStatus);
+}
+
+function isStartingNewSeries(seriesStatus) {
+    if (!seriesStatus) {
+        return false;
+    }
+
+    return !seriesStatus.inLibrary
+        && seriesStatus.libraryEpisode == null
+        && seriesStatus.latestReadEpisode == null
+        && (seriesStatus.chaptersRead ?? 0) === 0;
 }
 
 async function getStatus() {

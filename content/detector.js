@@ -17,6 +17,7 @@
     let floatSettings = null;
     let floatLastDetection = null;
     let floatLastResponse = null;
+    let cancelledDetectionKey = '';
 
     function log(...args) {
         if (!DEBUG) {
@@ -503,14 +504,14 @@
                 if (shouldNotify) {
                     showToast(
                         response.comicTitle ?? detection.title,
-                        `Chapter ${detection.episode} was not found on Comick`,
+                        `Series found, but Chapter ${detection.episode} was not found on Comick`,
                         `${makeDetectionKey(detection)}:chapter_not_found`
                     );
                 }
                 return true;
             }
             setPanelState(adapter, runner, pageType, 'warning', response.comicTitle ?? detection.title, [
-                { label: 'Status', value: `Chapter ${detection.episode} was not found on Comick` },
+                { label: 'Status', value: `Series found, but Chapter ${detection.episode} was not found on Comick` },
             ]);
             return true;
         }
@@ -525,6 +526,24 @@
             }
             setPanelState(adapter, runner, pageType, 'warning', detection.title, [
                 { label: 'Status', value: 'Log in to Comick to sync progress' },
+            ]);
+            return true;
+        }
+
+        if (response?.reason === 'sync_cancelled') {
+            if (pageType === 'sync') {
+                clearPanel();
+                if (shouldNotify) {
+                    showToast(
+                        response.comicTitle ?? detection.title,
+                        `Skipped syncing Chapter ${detection.episode}`,
+                        `${makeDetectionKey(detection)}:sync_cancelled`
+                    );
+                }
+                return true;
+            }
+            setPanelState(adapter, runner, pageType, 'warning', detection.title, [
+                { label: 'Status', value: 'Sync cancelled' },
             ]);
             return true;
         }
@@ -683,11 +702,18 @@
             btn.classList.add('is-error');
             if (popupTitle) popupTitle.textContent = title || 'Unknown';
             if (popupMeta) popupMeta.textContent = response.reason === 'comic_not_found' ? 'Not found on Comick' :
-                response.reason === 'chapter_not_found' ? `Ch. ${detection.episode} not on Comick` :
-                response.reason === 'not_authenticated' ? 'Not signed in' : 'Sync error';
+                response.reason === 'chapter_not_found' ? `Series found, Ch. ${detection.episode} not matched` :
+                response.reason === 'not_authenticated' ? 'Not signed in' :
+                response.reason === 'sync_cancelled' ? 'Sync cancelled' : 'Sync error';
         } else {
             removeFloatButton();
         }
+    }
+
+    function buildConfirmationMessage(detection, response) {
+        const seriesTitle = response?.comicTitle ?? detection?.title ?? 'this series';
+        const chapterLabel = detection?.episode != null ? `Chapter ${detection.episode}` : 'this chapter';
+        return `Start reading "${seriesTitle}" on Comick and mark ${chapterLabel} as read?`;
     }
 
     function loadFloatSettings() {
@@ -813,10 +839,10 @@
                     return;
                 }
 
-                const sendDetection = () => {
+                const sendDetection = (detectionPayload = detection) => {
                     inFlightDetectionKey = detectionKey;
                     const messageType = isSyncPage ? 'SYNC_DETECTION' : 'RESOLVE_SERIES';
-                    chrome.runtime.sendMessage({ type: messageType, detection }, (response) => {
+                    chrome.runtime.sendMessage({ type: messageType, detection: detectionPayload }, (response) => {
                         if (isStale()) {
                             clearInFlightIfCurrent(detectionKey);
                             return;
@@ -834,9 +860,39 @@
                             || response?.reason === 'comic_not_found'
                             || response?.reason === 'chapter_not_found'
                             || response?.reason === 'not_authenticated'
+                            || response?.reason === 'confirmation_required'
+                            || response?.reason === 'sync_cancelled'
                             || response?.reason === 'sync_error'
                             || response?.error
                         ) {
+                            if (response?.reason === 'confirmation_required') {
+                                clearInFlightIfCurrent(detectionKey);
+                                if (cancelledDetectionKey === detectionKey) {
+                                    const cancelledResponse = { ...response, reason: 'sync_cancelled' };
+                                    lastDetectionKey = detectionKey;
+                                    lastRenderedState = { key: detectionKey, response: cancelledResponse };
+                                    renderResponseState(adapter, runner, detection, cancelledResponse, { notify: false });
+                                    return;
+                                }
+
+                                const confirmed = window.confirm(buildConfirmationMessage(detection, response));
+                                if (!confirmed) {
+                                    cancelledDetectionKey = detectionKey;
+                                    const cancelledResponse = { ...response, reason: 'sync_cancelled' };
+                                    lastDetectionKey = detectionKey;
+                                    lastRenderedState = { key: detectionKey, response: cancelledResponse };
+                                    renderResponseState(adapter, runner, detection, cancelledResponse);
+                                    return;
+                                }
+
+                                cancelledDetectionKey = '';
+                                sendDetection({ ...detection, skipConfirmation: true });
+                                return;
+                            }
+
+                            if (response?.synced) {
+                                cancelledDetectionKey = '';
+                            }
                             lastDetectionKey = detectionKey;
                             lastRenderedState = { key: detectionKey, response };
                             clearInFlightIfCurrent(detectionKey);
@@ -879,6 +935,7 @@
             inFlightDetectionKey = '';
             lastRenderedState = null;
             lastToastKey = '';
+            cancelledDetectionKey = '';
             floatLastDetection = null;
             floatLastResponse = null;
             clearPanel();

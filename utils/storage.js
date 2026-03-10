@@ -15,13 +15,15 @@ const DEFAULT_SETTINGS = {
     notifyOnError: true,
     floatButton: true,
     floatButtonPosition: 'right',
-    confirmBeforeSync: false,
+    confirmBeforeSync: true,
     autoRetryFailed: true,
     retryIntervalMinutes: 30,
     toastDuration: 2600,
     syncLanguages: ['en', 'gb'],
     theme: 'dark',
 };
+
+const SETTINGS_MIGRATION_VERSION = 1;
 
 async function get(key) {
     const result = await chrome.storage.local.get(key);
@@ -62,6 +64,22 @@ async function getSettings() {
     return { ...DEFAULT_SETTINGS, ...stored };
 }
 
+async function migrateSettings() {
+    const stored = (await get(StorageKeys.SETTINGS)) ?? {};
+    if ((stored.settingsMigrationVersion ?? 0) >= SETTINGS_MIGRATION_VERSION) {
+        return { ...DEFAULT_SETTINGS, ...stored };
+    }
+
+    const migrated = {
+        ...DEFAULT_SETTINGS,
+        ...stored,
+        confirmBeforeSync: true,
+        settingsMigrationVersion: SETTINGS_MIGRATION_VERSION,
+    };
+    await set(StorageKeys.SETTINGS, migrated);
+    return migrated;
+}
+
 async function setSetting(key, value) {
     const settings = await getSettings();
     settings[key] = value;
@@ -69,4 +87,4 @@ async function setSetting(key, value) {
     return settings;
 }
 
-export { StorageKeys, DEFAULT_SETTINGS, get, set, remove, getCachedComic, setCachedComic, getSettings, setSetting };
+export { StorageKeys, DEFAULT_SETTINGS, get, set, remove, getCachedComic, setCachedComic, getSettings, migrateSettings, setSetting };

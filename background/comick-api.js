@@ -124,6 +124,11 @@ function chapterMatches(chapter, chapterNumber) {
     return false;
 }
 
+function normalizeChapterNumber(value) {
+    const numeric = Number(value);
+    return Number.isNaN(numeric) ? null : numeric;
+}
+
 function rankChapterCandidates(chapters = []) {
     return [...chapters].sort((a, b) => {
         const dateA = new Date(a.publish_at ?? a.created_at ?? 0).getTime();
@@ -145,6 +150,7 @@ function rankChapterCandidates(chapters = []) {
 async function findChapter(hid, chapterNumber, languages = DEFAULT_LANGS) {
     const tried = new Set();
     const languageCandidates = [...new Set([...(languages ?? []), ...DEFAULT_LANGS])];
+    const normalizedChapterNumber = normalizeChapterNumber(chapterNumber);
 
     for (const lang of languageCandidates) {
         const requestKey = `${lang ?? 'any'}:${chapterNumber}`;
@@ -161,6 +167,42 @@ async function findChapter(hid, chapterNumber, languages = DEFAULT_LANGS) {
         const matches = rankChapterCandidates(chapters.filter((chapter) => chapterMatches(chapter, chapterNumber)));
         if (matches.length > 0) {
             return matches[0];
+        }
+    }
+
+    // Some chapters are not returned by the exact `chap` filter even though they
+    // exist in the paginated chapter list, so scan the first few pages as a fallback.
+    for (const lang of languageCandidates) {
+        for (let page = 1; page <= 3; page++) {
+            const requestKey = `${lang ?? 'any'}:page:${page}`;
+            if (tried.has(requestKey)) continue;
+            tried.add(requestKey);
+
+            const data = await getChapters(hid, {
+                lang: lang ?? undefined,
+                limit: 100,
+                page,
+            });
+
+            const chapters = Array.isArray(data?.chapters) ? data.chapters : [];
+            const matches = rankChapterCandidates(chapters.filter((chapter) => chapterMatches(chapter, chapterNumber)));
+            if (matches.length > 0) {
+                return matches[0];
+            }
+
+            if (normalizedChapterNumber != null && chapters.length > 0) {
+                const chapterNumbers = chapters
+                    .map((chapter) => normalizeChapterNumber(chapter?.chap))
+                    .filter((value) => value != null);
+                const smallestChapter = chapterNumbers.length > 0 ? Math.min(...chapterNumbers) : null;
+                if (smallestChapter != null && smallestChapter < normalizedChapterNumber) {
+                    break;
+                }
+            }
+
+            if (chapters.length < 100) {
+                break;
+            }
         }
     }
 
