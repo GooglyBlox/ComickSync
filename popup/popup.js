@@ -37,6 +37,9 @@ const libraryLoading = $('library-loading');
 const libraryEmpty = $('library-empty');
 const historyList = $('history-list');
 const historyEmpty = $('history-empty');
+const updateBannerEl = $('update-banner');
+const updateCopyEl = $('update-copy');
+const updateBtn = $('update-btn');
 const exportSettingsBtn = $('export-settings-btn');
 const importSettingsBtn = $('import-settings-btn');
 const importFileInput = $('import-file');
@@ -102,7 +105,11 @@ function bindClick(id, handler) {
 
 async function loadStatus() {
     showState('loading');
-    const status = await msg({ type: 'GET_STATUS' });
+    const [status, update] = await Promise.all([
+        msg({ type: 'GET_STATUS' }),
+        msg({ type: 'GET_UPDATE_INFO' }),
+    ]);
+    renderUpdateBanner(update);
     if (!status?.authenticated) { showState('logged-out'); return; }
 
     const info = status.userInfo;
@@ -122,6 +129,21 @@ async function loadStatus() {
 
     setText(versionEl, `v${chrome.runtime.getManifest().version}`);
     showState('logged-in');
+}
+
+function renderUpdateBanner(update) {
+    const updateAvailable = Boolean(update?.updateAvailable && update?.latestVersion);
+    if (!updateBannerEl) {
+        return;
+    }
+
+    updateBannerEl.hidden = !updateAvailable;
+    if (!updateAvailable) {
+        setText(updateCopyEl, '');
+        return;
+    }
+
+    setText(updateCopyEl, `v${update.latestVersion} is available. You’re on v${update.currentVersion}.`);
 }
 
 function renderQueue(q) {
@@ -326,5 +348,6 @@ document.querySelectorAll('.tab').forEach((tab) => {
 bindClick('login-btn', () => msg({ type: 'LOGIN' }));
 bindClick('refresh-btn', refreshAuth);
 bindClick('refresh-auth-btn', refreshAuth);
+bindClick('update-btn', () => msg({ type: 'OPEN_UPDATE_PAGE' }));
 
 loadStatus();

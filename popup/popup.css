@@ -116,6 +116,29 @@ body::-webkit-scrollbar { width: 0; }
 .panel { display: none; flex-direction: column; gap: 10px; padding-top: 10px; }
 .panel.on { display: flex; }
 
+.update-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 10px 12px;
+    border: 1px solid #3f4a30;
+    border-radius: 8px;
+    background: #202617;
+}
+
+.update-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: #eef7d7;
+}
+
+.update-sub {
+    font-size: 11px;
+    color: #9aa384;
+    margin-top: 2px;
+}
+
 /* profile */
 .profile { padding: 2px 0; }
 .profile-name { font-size: 15px; font-weight: 600; color: #fff; }

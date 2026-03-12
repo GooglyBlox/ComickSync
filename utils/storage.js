@@ -7,6 +7,7 @@ const StorageKeys = {
     SYNC_HISTORY: 'comick_sync_history',
     SETTINGS: 'comick_settings',
     NOTIFICATION_LOG: 'comick_notification_log',
+    UPDATE_CHECK: 'comick_update_check',
 };
 
 const DEFAULT_SETTINGS = {

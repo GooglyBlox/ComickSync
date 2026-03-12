@@ -11,6 +11,10 @@ const RETRY_SYNC_ALARM = 'retry-sync-queue';
 const REFRESH_ADAPTERS_ALARM = 'refresh-adapters';
 const SYNC_HISTORY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const DUPLICATE_SYNC_WINDOW_MS = 24 * 60 * 60 * 1000;
+const UPDATE_CHECK_TTL_MS = 6 * 60 * 60 * 1000;
+const REPO_MANIFEST_URL = 'https://raw.githubusercontent.com/GooglyBlox/ComickSync/main/manifest.json';
+const LATEST_RELEASE_API_URL = 'https://api.github.com/repos/GooglyBlox/ComickSync/releases/latest';
+const FALLBACK_RELEASE_URL = 'https://github.com/GooglyBlox/ComickSync/releases/latest';
 
 function respond(sendResponse, createResponse, fallbackResponse) {
     Promise.resolve()
@@ -149,6 +153,27 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
     if (message.type === 'GET_SETTINGS') {
         respond(sendResponse, async () => ({ settings: await getSettings() }), () => ({ settings: {} }));
+        return true;
+    }
+
+    if (message.type === 'GET_UPDATE_INFO') {
+        respond(sendResponse, () => getUpdateInfo(), () => ({
+            checkedAt: Date.now(),
+            currentVersion: chrome.runtime.getManifest().version,
+            latestVersion: null,
+            updateAvailable: false,
+            releaseUrl: FALLBACK_RELEASE_URL,
+            error: 'update_check_failed',
+        }));
+        return true;
+    }
+
+    if (message.type === 'OPEN_UPDATE_PAGE') {
+        respond(sendResponse, async () => {
+            const update = await getUpdateInfo();
+            await chrome.tabs.create({ url: update.releaseUrl ?? FALLBACK_RELEASE_URL });
+            return { ok: true };
+        }, () => ({ ok: false }));
         return true;
     }
 
@@ -659,5 +684,97 @@ function onSettingChanged(key, value) {
                 chrome.alarms.clear(RETRY_SYNC_ALARM);
             }
         });
+    }
+}
+
+function parseVersionParts(version) {
+    return String(version ?? '')
+        .split('.')
+        .map((part) => Number.parseInt(part, 10))
+        .map((part) => (Number.isNaN(part) ? 0 : part));
+}
+
+function compareVersions(currentVersion, latestVersion) {
+    const current = parseVersionParts(currentVersion);
+    const latest = parseVersionParts(latestVersion);
+    const maxLength = Math.max(current.length, latest.length);
+
+    for (let index = 0; index < maxLength; index += 1) {
+        const currentPart = current[index] ?? 0;
+        const latestPart = latest[index] ?? 0;
+        if (currentPart === latestPart) {
+            continue;
+        }
+        return latestPart > currentPart ? -1 : 1;
+    }
+
+    return 0;
+}
+
+async function fetchRepoManifestVersion() {
+    const response = await fetch(REPO_MANIFEST_URL, {
+        headers: {
+            Accept: 'application/json',
+        },
+        cache: 'no-store',
+    });
+    if (!response.ok) {
+        throw new Error(`manifest_fetch_failed:${response.status}`);
+    }
+
+    const manifest = await response.json();
+    return manifest?.version ?? null;
+}
+
+async function fetchLatestReleaseUrl() {
+    const response = await fetch(LATEST_RELEASE_API_URL, {
+        headers: {
+            Accept: 'application/vnd.github+json',
+        },
+        cache: 'no-store',
+    });
+    if (!response.ok) {
+        throw new Error(`release_fetch_failed:${response.status}`);
+    }
+
+    const release = await response.json();
+    return release?.html_url ?? FALLBACK_RELEASE_URL;
+}
+
+async function getUpdateInfo() {
+    const cached = await get(StorageKeys.UPDATE_CHECK);
+    if (cached && Date.now() - (cached.checkedAt ?? 0) < UPDATE_CHECK_TTL_MS) {
+        return cached;
+    }
+
+    const currentVersion = chrome.runtime.getManifest().version;
+
+    try {
+        const [latestVersion, releaseUrl] = await Promise.all([
+            fetchRepoManifestVersion(),
+            fetchLatestReleaseUrl(),
+        ]);
+        const update = {
+            checkedAt: Date.now(),
+            currentVersion,
+            latestVersion,
+            updateAvailable: compareVersions(currentVersion, latestVersion) < 0,
+            releaseUrl: releaseUrl ?? FALLBACK_RELEASE_URL,
+            error: null,
+        };
+        await set(StorageKeys.UPDATE_CHECK, update);
+        return update;
+    } catch (error) {
+        logger.warn('Failed to check for updates:', error);
+        const fallback = {
+            checkedAt: Date.now(),
+            currentVersion,
+            latestVersion: null,
+            updateAvailable: false,
+            releaseUrl: FALLBACK_RELEASE_URL,
+            error: error.message,
+        };
+        await set(StorageKeys.UPDATE_CHECK, fallback);
+        return fallback;
     }
 }
