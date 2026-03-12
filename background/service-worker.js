@@ -12,7 +12,7 @@ const REFRESH_ADAPTERS_ALARM = 'refresh-adapters';
 const SYNC_HISTORY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const DUPLICATE_SYNC_WINDOW_MS = 24 * 60 * 60 * 1000;
 const UPDATE_CHECK_TTL_MS = 6 * 60 * 60 * 1000;
-const REPO_MANIFEST_URL = 'https://raw.githubusercontent.com/GooglyBlox/ComickSync/main/manifest.json';
+const REPO_MANIFEST_URL = 'https://raw.githubusercontent.com/GooglyBlox/ComickSync/master/manifest.json';
 const LATEST_RELEASE_API_URL = 'https://api.github.com/repos/GooglyBlox/ComickSync/releases/latest';
 const FALLBACK_RELEASE_URL = 'https://github.com/GooglyBlox/ComickSync/releases/latest';
 
