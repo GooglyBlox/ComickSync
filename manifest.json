@@ -1,7 +1,7 @@
 {
     "manifest_version": 3,
     "name": "ComickSync",
-    "version": "1.1",
+    "version": "1.0",
     "description": "Sync your manga reading progress to Comick",
     "author": "GooglyBlox",
     "permissions": [
