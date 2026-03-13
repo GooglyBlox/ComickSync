@@ -26,7 +26,9 @@
           <p>Connect your Comick account to sync chapters as you read.</p>
         </div>
         <button id="login-btn" class="btn-primary">Sign in to Comick</button>
-        <button id="refresh-btn" class="btn-flat">I've already signed in</button>
+        <button id="refresh-btn" class="btn-flat">
+          I've already signed in
+        </button>
       </div>
 
       <div id="logged-in" class="state">
@@ -61,13 +63,20 @@
             <div id="pending-list" class="entries"></div>
           </div>
 
-          <button id="refresh-auth-btn" class="btn-flat full">Refresh session</button>
+          <button id="refresh-auth-btn" class="btn-flat full">
+            Refresh session
+          </button>
           <span class="ver" id="version"></span>
         </div>
 
         <!-- LIBRARY -->
         <div class="panel" data-panel="library">
-          <input type="text" id="library-search" class="field" placeholder="Search your library..." />
+          <input
+            type="text"
+            id="library-search"
+            class="field"
+            placeholder="Search your library..."
+          />
           <div id="library-loading" class="note" hidden>Loading...</div>
           <div id="library-empty" class="note" hidden>Nothing here yet.</div>
           <div id="library-list" class="entries"></div>
@@ -75,7 +84,9 @@
 
         <!-- HISTORY -->
         <div class="panel" data-panel="history">
-          <div id="history-empty" class="note" hidden>No syncs yet. Go read something.</div>
+          <div id="history-empty" class="note" hidden>
+            No syncs yet. Go read something.
+          </div>
           <div id="history-list" class="entries"></div>
         </div>
 
@@ -102,7 +113,12 @@
             </label>
             <label class="opt">
               <span>Languages</span>
-              <input type="text" id="setting-syncLanguages" placeholder="en, gb" class="field-sm" />
+              <input
+                type="text"
+                id="setting-syncLanguages"
+                placeholder="en, gb"
+                class="field-sm"
+              />
             </label>
           </fieldset>
 
@@ -137,7 +153,14 @@
             </label>
             <label class="opt">
               <span>Toast duration</span>
-              <input type="number" id="setting-toastDuration" min="1000" max="10000" step="200" class="field-sm" />
+              <input
+                type="number"
+                id="setting-toastDuration"
+                min="1000"
+                max="10000"
+                step="200"
+                class="field-sm"
+              />
             </label>
           </fieldset>
 
@@ -148,7 +171,9 @@
               <button id="import-settings-btn" class="btn-flat">Import</button>
               <input type="file" id="import-file" accept=".json" hidden />
             </div>
-            <button id="clear-cache-btn" class="btn-flat warn full">Clear all caches</button>
+            <button id="clear-cache-btn" class="btn-flat warn full">
+              Clear all caches
+            </button>
           </fieldset>
         </div>
       </div>

@@ -6,12 +6,12 @@ on:
       - master
       - main
     paths:
-      - 'manifest.json'
-  
+      - "manifest.json"
+
   workflow_dispatch:
     inputs:
       force_release:
-        description: 'Force create release even if it exists'
+        description: "Force create release even if it exists"
         required: false
         default: false
         type: boolean
@@ -22,7 +22,7 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -58,14 +58,14 @@ jobs:
           EXT_NAME=$(jq -r '.name // "extension"' manifest.json | tr ' ' '-' | tr '[:upper:]' '[:lower:]')
           EXT_DISPLAY_NAME=$(jq -r '.name // "Extension"' manifest.json)
           ZIP_NAME="${EXT_NAME}-v${VERSION}.zip"
-          
+
           zip -r "$ZIP_NAME" . -x "*.git*" -x ".github/*" -x "*.zip"
-          
+
           if [ "${{ github.event.inputs.force_release }}" = "true" ]; then
             gh release delete "v${VERSION}" --yes 2>/dev/null || true
             git push --delete origin "v${VERSION}" 2>/dev/null || true
           fi
-          
+
           gh release create "v${VERSION}" \
             --title "${EXT_DISPLAY_NAME} v${VERSION}" \
             --generate-notes \

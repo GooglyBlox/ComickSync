@@ -1,780 +1,918 @@
-import { login, isAuthenticated, openLoginTab, watchCookieChanges } from './auth.js';
-import { searchComic, getComicBySlug, getUserFollows, findChapter, markChapterRead } from './comick-api.js';
-import { StorageKeys, get, set, setCachedComic, getSettings, migrateSettings, setSetting } from '../utils/storage.js';
-import * as logger from '../utils/logger.js';
-import { AdapterRegistry } from '../chibi/registry.js';
-import { loadAllMangaPages, clearCache } from '../chibi/loader.js';
+import {
+  login,
+  isAuthenticated,
+  openLoginTab,
+  watchCookieChanges,
+} from "./auth.js";
+import {
+  searchComic,
+  getComicBySlug,
+  getUserFollows,
+  findChapter,
+  markChapterRead,
+} from "./comick-api.js";
+import {
+  StorageKeys,
+  get,
+  set,
+  setCachedComic,
+  getSettings,
+  migrateSettings,
+  setSetting,
+} from "../utils/storage.js";
+import * as logger from "../utils/logger.js";
+import { AdapterRegistry } from "../chibi/registry.js";
+import { loadAllMangaPages, clearCache } from "../chibi/loader.js";
 
 const registry = new AdapterRegistry();
 const FOLLOWS_CACHE_DURATION = 30 * 1000;
-const RETRY_SYNC_ALARM = 'retry-sync-queue';
-const REFRESH_ADAPTERS_ALARM = 'refresh-adapters';
+const RETRY_SYNC_ALARM = "retry-sync-queue";
+const REFRESH_ADAPTERS_ALARM = "refresh-adapters";
 const SYNC_HISTORY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const DUPLICATE_SYNC_WINDOW_MS = 24 * 60 * 60 * 1000;
 const UPDATE_CHECK_TTL_MS = 6 * 60 * 60 * 1000;
-const REPO_MANIFEST_URL = 'https://raw.githubusercontent.com/GooglyBlox/ComickSync/master/manifest.json';
-const LATEST_RELEASE_API_URL = 'https://api.github.com/repos/GooglyBlox/ComickSync/releases/latest';
-const FALLBACK_RELEASE_URL = 'https://github.com/GooglyBlox/ComickSync/releases/latest';
+const REPO_MANIFEST_URL =
+  "https://raw.githubusercontent.com/GooglyBlox/ComickSync/master/manifest.json";
+const LATEST_RELEASE_API_URL =
+  "https://api.github.com/repos/GooglyBlox/ComickSync/releases/latest";
+const FALLBACK_RELEASE_URL =
+  "https://github.com/GooglyBlox/ComickSync/releases/latest";
 
 function respond(sendResponse, createResponse, fallbackResponse) {
-    Promise.resolve()
-        .then(createResponse)
-        .then(sendResponse)
-        .catch((error) => {
-            logger.error('Background message error:', error);
-            sendResponse(fallbackResponse(error));
-        });
+  Promise.resolve()
+    .then(createResponse)
+    .then(sendResponse)
+    .catch((error) => {
+      logger.error("Background message error:", error);
+      sendResponse(fallbackResponse(error));
+    });
 }
 
 function clearRuntimeCaches() {
-    return Promise.all([
-        set(StorageKeys.COMIC_CACHE, {}),
-        set(StorageKeys.FOLLOWS_CACHE, {}),
-        set(StorageKeys.SYNC_HISTORY, {}),
-        set(StorageKeys.SYNC_QUEUE, []),
-    ]);
+  return Promise.all([
+    set(StorageKeys.COMIC_CACHE, {}),
+    set(StorageKeys.FOLLOWS_CACHE, {}),
+    set(StorageKeys.SYNC_HISTORY, {}),
+    set(StorageKeys.SYNC_QUEUE, []),
+  ]);
 }
 
 async function initAdapters() {
-    const definitions = await loadAllMangaPages();
-    registry.registerFromMalSync(definitions);
+  const definitions = await loadAllMangaPages();
+  registry.registerFromMalSync(definitions);
 }
 
 chrome.runtime.onInstalled.addListener(async () => {
-    logger.info('Extension installed');
-    await Promise.all([login(), initAdapters(), migrateSettings()]);
+  logger.info("Extension installed");
+  await Promise.all([login(), initAdapters(), migrateSettings()]);
 });
 
 chrome.runtime.onStartup.addListener(async () => {
-    await Promise.all([login(), initAdapters(), migrateSettings()]);
+  await Promise.all([login(), initAdapters(), migrateSettings()]);
 });
 
 chrome.alarms.create(REFRESH_ADAPTERS_ALARM, { periodInMinutes: 1440 });
 chrome.alarms.create(RETRY_SYNC_ALARM, { periodInMinutes: 30 });
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
-    if (alarm.name === REFRESH_ADAPTERS_ALARM) {
-        logger.info('Refreshing adapter definitions');
-        await clearCache();
-        await initAdapters();
-    }
+  if (alarm.name === REFRESH_ADAPTERS_ALARM) {
+    logger.info("Refreshing adapter definitions");
+    await clearCache();
+    await initAdapters();
+  }
 
-    if (alarm.name === RETRY_SYNC_ALARM) {
-        const settings = await getSettings();
-        if (!settings.autoRetryFailed) return;
-        logger.info('Auto-retrying failed syncs');
-        await retrySyncQueue();
-    }
+  if (alarm.name === RETRY_SYNC_ALARM) {
+    const settings = await getSettings();
+    if (!settings.autoRetryFailed) return;
+    logger.info("Auto-retrying failed syncs");
+    await retrySyncQueue();
+  }
 });
 
 watchCookieChanges();
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-    if (message.type === 'GET_MATCHING_ADAPTER') {
-        respond(sendResponse, async () => ({ adapter: await getMatchingAdapter(message.url) }), (error) => ({
-            adapter: null,
-            error: error.message,
-        }));
-        return true;
-    }
+  if (message.type === "GET_MATCHING_ADAPTER") {
+    respond(
+      sendResponse,
+      async () => ({ adapter: await getMatchingAdapter(message.url) }),
+      (error) => ({
+        adapter: null,
+        error: error.message,
+      }),
+    );
+    return true;
+  }
 
-    if (message.type === 'SYNC_DETECTION') {
-        respond(sendResponse, () => handleDetection(message.detection), (error) => ({
-            synced: false,
-            error: error.message,
-        }));
-        return true;
-    }
+  if (message.type === "SYNC_DETECTION") {
+    respond(
+      sendResponse,
+      () => handleDetection(message.detection),
+      (error) => ({
+        synced: false,
+        error: error.message,
+      }),
+    );
+    return true;
+  }
 
-    if (message.type === 'RESOLVE_SERIES') {
-        respond(sendResponse, () => resolveSeries(message.detection), (error) => ({
-            matched: false,
-            error: error.message,
-        }));
-        return true;
-    }
+  if (message.type === "RESOLVE_SERIES") {
+    respond(
+      sendResponse,
+      () => resolveSeries(message.detection),
+      (error) => ({
+        matched: false,
+        error: error.message,
+      }),
+    );
+    return true;
+  }
 
-    if (message.type === 'GET_STATUS') {
-        respond(sendResponse, () => getStatus(), () => ({
-            authenticated: false,
-            pendingSyncs: 0,
-            syncQueue: [],
-            adapterCount: registry.adapters.length,
-        }));
-        return true;
-    }
+  if (message.type === "GET_STATUS") {
+    respond(
+      sendResponse,
+      () => getStatus(),
+      () => ({
+        authenticated: false,
+        pendingSyncs: 0,
+        syncQueue: [],
+        adapterCount: registry.adapters.length,
+      }),
+    );
+    return true;
+  }
 
-    if (message.type === 'LOGIN') {
-        respond(sendResponse, async () => {
-            await openLoginTab();
-            return { ok: true };
-        }, () => ({ ok: false }));
-        return true;
-    }
+  if (message.type === "LOGIN") {
+    respond(
+      sendResponse,
+      async () => {
+        await openLoginTab();
+        return { ok: true };
+      },
+      () => ({ ok: false }),
+    );
+    return true;
+  }
 
-    if (message.type === 'REFRESH_AUTH') {
-        respond(sendResponse, async () => {
-            const userInfo = await login();
-            return { ok: !!userInfo, userInfo };
-        }, () => ({ ok: false, userInfo: null }));
-        return true;
-    }
+  if (message.type === "REFRESH_AUTH") {
+    respond(
+      sendResponse,
+      async () => {
+        const userInfo = await login();
+        return { ok: !!userInfo, userInfo };
+      },
+      () => ({ ok: false, userInfo: null }),
+    );
+    return true;
+  }
 
-    if (message.type === 'REFRESH_ADAPTERS') {
-        respond(sendResponse, async () => {
-            await clearCache();
-            await initAdapters();
-            return { ok: true, count: registry.adapters.length };
-        }, () => ({ ok: false, count: registry.adapters.length }));
-        return true;
-    }
+  if (message.type === "REFRESH_ADAPTERS") {
+    respond(
+      sendResponse,
+      async () => {
+        await clearCache();
+        await initAdapters();
+        return { ok: true, count: registry.adapters.length };
+      },
+      () => ({ ok: false, count: registry.adapters.length }),
+    );
+    return true;
+  }
 
-    if (message.type === 'GET_ADAPTERS') {
-        sendResponse({
-            count: registry.adapters.length,
-            adapters: registry.adapters.map((adapter) => ({
-                id: adapter.id,
-                name: adapter.name,
-                domain: adapter.domain,
-            })),
+  if (message.type === "GET_ADAPTERS") {
+    sendResponse({
+      count: registry.adapters.length,
+      adapters: registry.adapters.map((adapter) => ({
+        id: adapter.id,
+        name: adapter.name,
+        domain: adapter.domain,
+      })),
+    });
+    return true;
+  }
+
+  if (message.type === "GET_LIBRARY") {
+    respond(
+      sendResponse,
+      () => getLibrary(),
+      () => ({ library: [] }),
+    );
+    return true;
+  }
+
+  if (message.type === "GET_SYNC_HISTORY") {
+    respond(
+      sendResponse,
+      async () => ({ history: await getSyncHistory() }),
+      () => ({ history: {} }),
+    );
+    return true;
+  }
+
+  if (message.type === "GET_SETTINGS") {
+    respond(
+      sendResponse,
+      async () => ({ settings: await getSettings() }),
+      () => ({ settings: {} }),
+    );
+    return true;
+  }
+
+  if (message.type === "GET_UPDATE_INFO") {
+    respond(
+      sendResponse,
+      () => getUpdateInfo(),
+      () => ({
+        checkedAt: Date.now(),
+        currentVersion: chrome.runtime.getManifest().version,
+        latestVersion: null,
+        updateAvailable: false,
+        releaseUrl: FALLBACK_RELEASE_URL,
+        error: "update_check_failed",
+      }),
+    );
+    return true;
+  }
+
+  if (message.type === "OPEN_UPDATE_PAGE") {
+    respond(
+      sendResponse,
+      async () => {
+        const update = await getUpdateInfo();
+        await chrome.tabs.create({
+          url: update.releaseUrl ?? FALLBACK_RELEASE_URL,
         });
-        return true;
-    }
+        return { ok: true };
+      },
+      () => ({ ok: false }),
+    );
+    return true;
+  }
 
-    if (message.type === 'GET_LIBRARY') {
-        respond(sendResponse, () => getLibrary(), () => ({ library: [] }));
-        return true;
-    }
+  if (message.type === "SET_SETTING") {
+    respond(
+      sendResponse,
+      async () => {
+        const settings = await setSetting(message.key, message.value);
+        onSettingChanged(message.key, message.value);
+        return { ok: true, settings };
+      },
+      () => ({ ok: false }),
+    );
+    return true;
+  }
 
-    if (message.type === 'GET_SYNC_HISTORY') {
-        respond(sendResponse, async () => ({ history: await getSyncHistory() }), () => ({ history: {} }));
-        return true;
-    }
+  if (message.type === "IMPORT_SETTINGS") {
+    respond(
+      sendResponse,
+      async () => {
+        await set(StorageKeys.SETTINGS, message.settings);
+        return { ok: true };
+      },
+      () => ({ ok: false }),
+    );
+    return true;
+  }
 
-    if (message.type === 'GET_SETTINGS') {
-        respond(sendResponse, async () => ({ settings: await getSettings() }), () => ({ settings: {} }));
-        return true;
-    }
+  if (message.type === "RETRY_SYNC_QUEUE") {
+    respond(
+      sendResponse,
+      () => retrySyncQueue(),
+      () => ({ retried: 0, succeeded: 0, failed: 0 }),
+    );
+    return true;
+  }
 
-    if (message.type === 'GET_UPDATE_INFO') {
-        respond(sendResponse, () => getUpdateInfo(), () => ({
-            checkedAt: Date.now(),
-            currentVersion: chrome.runtime.getManifest().version,
-            latestVersion: null,
-            updateAvailable: false,
-            releaseUrl: FALLBACK_RELEASE_URL,
-            error: 'update_check_failed',
-        }));
-        return true;
-    }
+  if (message.type === "CLEAR_SYNC_QUEUE") {
+    respond(
+      sendResponse,
+      async () => {
+        await set(StorageKeys.SYNC_QUEUE, []);
+        return { ok: true };
+      },
+      () => ({ ok: false }),
+    );
+    return true;
+  }
 
-    if (message.type === 'OPEN_UPDATE_PAGE') {
-        respond(sendResponse, async () => {
-            const update = await getUpdateInfo();
-            await chrome.tabs.create({ url: update.releaseUrl ?? FALLBACK_RELEASE_URL });
-            return { ok: true };
-        }, () => ({ ok: false }));
-        return true;
-    }
+  if (message.type === "CLEAR_CACHES") {
+    respond(
+      sendResponse,
+      async () => {
+        await clearRuntimeCaches();
+        return { ok: true };
+      },
+      () => ({ ok: false }),
+    );
+    return true;
+  }
 
-    if (message.type === 'SET_SETTING') {
-        respond(sendResponse, async () => {
-            const settings = await setSetting(message.key, message.value);
-            onSettingChanged(message.key, message.value);
-            return { ok: true, settings };
-        }, () => ({ ok: false }));
-        return true;
-    }
+  if (message.type === "GET_FLOAT_SETTINGS") {
+    respond(
+      sendResponse,
+      async () => {
+        const settings = await getSettings();
+        return {
+          enabled: settings.floatButton,
+          position: settings.floatButtonPosition,
+        };
+      },
+      () => ({ enabled: true, position: "right" }),
+    );
+    return true;
+  }
 
-    if (message.type === 'IMPORT_SETTINGS') {
-        respond(sendResponse, async () => {
-            await set(StorageKeys.SETTINGS, message.settings);
-            return { ok: true };
-        }, () => ({ ok: false }));
-        return true;
-    }
-
-    if (message.type === 'RETRY_SYNC_QUEUE') {
-        respond(sendResponse, () => retrySyncQueue(), () => ({ retried: 0, succeeded: 0, failed: 0 }));
-        return true;
-    }
-
-    if (message.type === 'CLEAR_SYNC_QUEUE') {
-        respond(sendResponse, async () => {
-            await set(StorageKeys.SYNC_QUEUE, []);
-            return { ok: true };
-        }, () => ({ ok: false }));
-        return true;
-    }
-
-    if (message.type === 'CLEAR_CACHES') {
-        respond(sendResponse, async () => {
-            await clearRuntimeCaches();
-            return { ok: true };
-        }, () => ({ ok: false }));
-        return true;
-    }
-
-    if (message.type === 'GET_FLOAT_SETTINGS') {
-        respond(sendResponse, async () => {
-            const settings = await getSettings();
-            return {
-                enabled: settings.floatButton,
-                position: settings.floatButtonPosition,
-            };
-        }, () => ({ enabled: true, position: 'right' }));
-        return true;
-    }
-
-    return false;
+  return false;
 });
 
 async function getMatchingAdapter(url) {
-    if (registry.adapters.length === 0) {
-        await initAdapters();
-    }
+  if (registry.adapters.length === 0) {
+    await initAdapters();
+  }
 
-    const adapter = registry.findAdapter(url);
-    return adapter ?? null;
+  const adapter = registry.findAdapter(url);
+  return adapter ?? null;
 }
 
 async function handleDetection(detection) {
-    const authenticated = await isAuthenticated();
-    if (!authenticated) {
-        return { synced: false, reason: 'not_authenticated' };
+  const authenticated = await isAuthenticated();
+  if (!authenticated) {
+    return { synced: false, reason: "not_authenticated" };
+  }
+
+  if (!detection) {
+    return { synced: false, reason: "no_match" };
+  }
+
+  logger.info(
+    `Detected: "${detection.title}" Ch.${detection.episode} via ${detection.adapterName}`,
+  );
+
+  try {
+    const comic = await resolveComic(detection);
+    if (!comic) {
+      logger.warn(
+        "Comic not found on Comick:",
+        detection.title,
+        detection.identifier,
+      );
+      return { synced: false, reason: "comic_not_found", ...detection };
     }
 
-    if (!detection) {
-        return { synced: false, reason: 'no_match' };
+    const settings = await getSettings();
+    const chapterData = await findChapter(
+      comic.hid,
+      detection.episode,
+      settings.syncLanguages,
+    );
+    if (!chapterData) {
+      logger.warn(
+        `Chapter ${detection.episode} not found for ${comic.title ?? comic.slug}`,
+      );
+      return {
+        synced: false,
+        reason: "chapter_not_found",
+        ...detection,
+        ...(await buildSeriesStatus(comic)),
+      };
     }
 
-    logger.info(`Detected: "${detection.title}" Ch.${detection.episode} via ${detection.adapterName}`);
-
-    try {
-        const comic = await resolveComic(detection);
-        if (!comic) {
-            logger.warn('Comic not found on Comick:', detection.title, detection.identifier);
-            return { synced: false, reason: 'comic_not_found', ...detection };
-        }
-
-        const settings = await getSettings();
-        const chapterData = await findChapter(comic.hid, detection.episode, settings.syncLanguages);
-        if (!chapterData) {
-            logger.warn(`Chapter ${detection.episode} not found for ${comic.title ?? comic.slug}`);
-            return {
-                synced: false,
-                reason: 'chapter_not_found',
-                ...detection,
-                ...(await buildSeriesStatus(comic)),
-            };
-        }
-
-        if (await isDuplicateSync(comic, chapterData, detection)) {
-            logger.info(`Skipping duplicate sync for "${comic.title ?? comic.slug}" Ch.${detection.episode}`);
-            return {
-                synced: true,
-                skipped: true,
-                ...detection,
-                ...(await buildSeriesStatus(comic)),
-            };
-        }
-
-        const seriesStatus = await buildSeriesStatus(comic);
-        if (shouldConfirmBeforeSync(settings, detection, seriesStatus)) {
-            logger.info(`Confirmation required before syncing "${comic.title ?? comic.slug}" Ch.${detection.episode}`);
-            return {
-                synced: false,
-                reason: 'confirmation_required',
-                ...detection,
-                ...seriesStatus,
-            };
-        }
-
-        await markChapterRead(comic.id, chapterData.id);
-        await rememberSync(comic, chapterData, detection);
-        const userInfo = await get(StorageKeys.USER_INFO);
-        // Always invalidate follows cache after sync so the next overview
-        // page request fetches fresh data from the Comick API.
-        await invalidateFollowsCache(userInfo?.userId ?? null);
-        logger.info(`Synced: "${comic.title ?? comic.slug}" Ch.${detection.episode}`);
-
-        if (settings.notifyOnSync) {
-            showBrowserNotification(
-                comic.title ?? comic.slug,
-                `Chapter ${detection.episode} marked as read`,
-                `sync-${comic.id}-${chapterData.id}`
-            );
-        }
-
-        return {
-            synced: true,
-            ...detection,
-            ...(await buildSeriesStatus(comic)),
-        };
-    } catch (err) {
-        logger.error('Sync failed:', err);
-
-        const queue = (await get(StorageKeys.SYNC_QUEUE)) ?? [];
-        queue.push({ ...detection, timestamp: Date.now(), error: err.message });
-        await chrome.storage.local.set({ [StorageKeys.SYNC_QUEUE]: queue });
-
-        const settings = await getSettings();
-        if (settings.notifyOnError) {
-            showBrowserNotification(
-                'Sync Failed',
-                `${detection.title} Ch.${detection.episode}: ${err.message}`,
-                `error-${Date.now()}`
-            );
-        }
-
-        return { synced: false, reason: 'sync_error', ...detection };
+    if (await isDuplicateSync(comic, chapterData, detection)) {
+      logger.info(
+        `Skipping duplicate sync for "${comic.title ?? comic.slug}" Ch.${detection.episode}`,
+      );
+      return {
+        synced: true,
+        skipped: true,
+        ...detection,
+        ...(await buildSeriesStatus(comic)),
+      };
     }
+
+    const seriesStatus = await buildSeriesStatus(comic);
+    if (shouldConfirmBeforeSync(settings, detection, seriesStatus)) {
+      logger.info(
+        `Confirmation required before syncing "${comic.title ?? comic.slug}" Ch.${detection.episode}`,
+      );
+      return {
+        synced: false,
+        reason: "confirmation_required",
+        ...detection,
+        ...seriesStatus,
+      };
+    }
+
+    await markChapterRead(comic.id, chapterData.id);
+    await rememberSync(comic, chapterData, detection);
+    const userInfo = await get(StorageKeys.USER_INFO);
+    // Always invalidate follows cache after sync so the next overview
+    // page request fetches fresh data from the Comick API.
+    await invalidateFollowsCache(userInfo?.userId ?? null);
+    logger.info(
+      `Synced: "${comic.title ?? comic.slug}" Ch.${detection.episode}`,
+    );
+
+    if (settings.notifyOnSync) {
+      showBrowserNotification(
+        comic.title ?? comic.slug,
+        `Chapter ${detection.episode} marked as read`,
+        `sync-${comic.id}-${chapterData.id}`,
+      );
+    }
+
+    return {
+      synced: true,
+      ...detection,
+      ...(await buildSeriesStatus(comic)),
+    };
+  } catch (err) {
+    logger.error("Sync failed:", err);
+
+    const queue = (await get(StorageKeys.SYNC_QUEUE)) ?? [];
+    queue.push({ ...detection, timestamp: Date.now(), error: err.message });
+    await chrome.storage.local.set({ [StorageKeys.SYNC_QUEUE]: queue });
+
+    const settings = await getSettings();
+    if (settings.notifyOnError) {
+      showBrowserNotification(
+        "Sync Failed",
+        `${detection.title} Ch.${detection.episode}: ${err.message}`,
+        `error-${Date.now()}`,
+      );
+    }
+
+    return { synced: false, reason: "sync_error", ...detection };
+  }
 }
 
 function shouldConfirmBeforeSync(settings, detection, seriesStatus) {
-    if (!settings?.confirmBeforeSync || detection?.skipConfirmation) {
-        return false;
-    }
+  if (!settings?.confirmBeforeSync || detection?.skipConfirmation) {
+    return false;
+  }
 
-    return isStartingNewSeries(seriesStatus);
+  return isStartingNewSeries(seriesStatus);
 }
 
 function isStartingNewSeries(seriesStatus) {
-    if (!seriesStatus) {
-        return false;
-    }
+  if (!seriesStatus) {
+    return false;
+  }
 
-    return !seriesStatus.inLibrary
-        && seriesStatus.libraryEpisode == null
-        && seriesStatus.latestReadEpisode == null
-        && (seriesStatus.chaptersRead ?? 0) === 0;
+  return (
+    !seriesStatus.inLibrary &&
+    seriesStatus.libraryEpisode == null &&
+    seriesStatus.latestReadEpisode == null &&
+    (seriesStatus.chaptersRead ?? 0) === 0
+  );
 }
 
 async function getStatus() {
-    const authenticated = await isAuthenticated();
-    const userInfo = await get(StorageKeys.USER_INFO);
-    const queue = (await get(StorageKeys.SYNC_QUEUE)) ?? [];
-    return {
-        authenticated,
-        userInfo,
-        pendingSyncs: queue.length,
-        syncQueue: queue,
-        adapterCount: registry.adapters.length,
-    };
+  const authenticated = await isAuthenticated();
+  const userInfo = await get(StorageKeys.USER_INFO);
+  const queue = (await get(StorageKeys.SYNC_QUEUE)) ?? [];
+  return {
+    authenticated,
+    userInfo,
+    pendingSyncs: queue.length,
+    syncQueue: queue,
+    adapterCount: registry.adapters.length,
+  };
 }
 
 async function resolveSeries(detection) {
-    if (!detection) {
-        return { matched: false, reason: 'no_match' };
-    }
+  if (!detection) {
+    return { matched: false, reason: "no_match" };
+  }
 
-    const comic = await resolveComic(detection);
-    if (!comic) {
-        return { matched: false, reason: 'comic_not_found', ...detection };
-    }
+  const comic = await resolveComic(detection);
+  if (!comic) {
+    return { matched: false, reason: "comic_not_found", ...detection };
+  }
 
-    return {
-        matched: true,
-        ...detection,
-        ...(await buildSeriesStatus(comic)),
-    };
+  return {
+    matched: true,
+    ...detection,
+    ...(await buildSeriesStatus(comic)),
+  };
 }
 
 function normalizeSlug(value) {
-    return String(value ?? '')
-        .trim()
-        .replace(/^\/+|\/+$/g, '')
-        .replace(/^comic\//i, '')
-        .replace(/^title\//i, '')
-        .replace(/^series\//i, '')
-        .split('?')[0]
-        .split('#')[0]
-        .toLowerCase();
+  return String(value ?? "")
+    .trim()
+    .replace(/^\/+|\/+$/g, "")
+    .replace(/^comic\//i, "")
+    .replace(/^title\//i, "")
+    .replace(/^series\//i, "")
+    .split("?")[0]
+    .split("#")[0]
+    .toLowerCase();
 }
 
 function normalizeTitleSlug(value) {
-    return normalizeSlug(value).replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  return normalizeSlug(value)
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }
 
 function slugFromUrl(url) {
-    if (!url) return null;
-    try {
-        const parsed = new URL(url);
-        const parts = parsed.pathname.split('/').filter(Boolean);
-        const seriesIndex = parts.findIndex((part) => part === 'series' || part === 'comic' || part === 'title');
-        if (seriesIndex >= 0 && parts[seriesIndex + 1]) {
-            return normalizeSlug(parts[seriesIndex + 1]);
-        }
-        if (parts[0]) {
-            return normalizeSlug(parts[parts.length - 1]);
-        }
-    } catch {
-        return normalizeSlug(url);
+  if (!url) return null;
+  try {
+    const parsed = new URL(url);
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    const seriesIndex = parts.findIndex(
+      (part) => part === "series" || part === "comic" || part === "title",
+    );
+    if (seriesIndex >= 0 && parts[seriesIndex + 1]) {
+      return normalizeSlug(parts[seriesIndex + 1]);
     }
-    return null;
+    if (parts[0]) {
+      return normalizeSlug(parts[parts.length - 1]);
+    }
+  } catch {
+    return normalizeSlug(url);
+  }
+  return null;
 }
 
 function buildSlugCandidates(detection) {
-    const candidates = new Set();
-    const add = (value) => {
-        const slug = normalizeSlug(value);
-        if (slug) candidates.add(slug);
-    };
+  const candidates = new Set();
+  const add = (value) => {
+    const slug = normalizeSlug(value);
+    if (slug) candidates.add(slug);
+  };
 
-    add(detection.identifier);
-    add(slugFromUrl(detection.overviewUrl));
-    add(slugFromUrl(detection.url));
+  add(detection.identifier);
+  add(slugFromUrl(detection.overviewUrl));
+  add(slugFromUrl(detection.url));
 
-    const titleSlug = normalizeTitleSlug(detection.title);
-    add(titleSlug);
+  const titleSlug = normalizeTitleSlug(detection.title);
+  add(titleSlug);
 
-    return Array.from(candidates);
+  return Array.from(candidates);
 }
 
 function comicMatchesSlugCandidate(comic, slug) {
-    if (!comic || !slug) {
-        return false;
-    }
+  if (!comic || !slug) {
+    return false;
+  }
 
-    const normalizedCandidate = normalizeSlug(slug);
-    const possibleMatches = [
-        comic.slug,
-        comic.title,
-        ...(Array.isArray(comic.md_titles) ? comic.md_titles.map((entry) => entry?.title) : []),
-    ]
-        .map(normalizeTitleSlug)
-        .filter(Boolean);
+  const normalizedCandidate = normalizeSlug(slug);
+  const possibleMatches = [
+    comic.slug,
+    comic.title,
+    ...(Array.isArray(comic.md_titles)
+      ? comic.md_titles.map((entry) => entry?.title)
+      : []),
+  ]
+    .map(normalizeTitleSlug)
+    .filter(Boolean);
 
-    return possibleMatches.includes(normalizedCandidate);
+  return possibleMatches.includes(normalizedCandidate);
 }
 
 async function resolveComicBySlug(slug) {
-    if (!slug) return null;
+  if (!slug) return null;
 
-    try {
-        const comic = await getComicBySlug(slug);
-        return comicMatchesSlugCandidate(comic, slug) ? comic : null;
-    } catch {
-        return null;
-    }
+  try {
+    const comic = await getComicBySlug(slug);
+    return comicMatchesSlugCandidate(comic, slug) ? comic : null;
+  } catch {
+    return null;
+  }
 }
 
 async function resolveComic(detection) {
-    for (const slug of buildSlugCandidates(detection)) {
-        const comic = await resolveComicBySlug(slug);
-        if (comic) {
-            logger.info(`Resolved "${detection.title}" by slug candidate "${slug}"`);
-            return comic;
-        }
-    }
-
-    const comic = await searchComic(detection.title);
+  for (const slug of buildSlugCandidates(detection)) {
+    const comic = await resolveComicBySlug(slug);
     if (comic) {
-        for (const slug of buildSlugCandidates(detection).filter((candidate) => comicMatchesSlugCandidate(comic, candidate))) {
-            await setCachedComic(slug, comic);
-        }
+      logger.info(`Resolved "${detection.title}" by slug candidate "${slug}"`);
+      return comic;
     }
-    return comic;
+  }
+
+  const comic = await searchComic(detection.title);
+  if (comic) {
+    for (const slug of buildSlugCandidates(detection).filter((candidate) =>
+      comicMatchesSlugCandidate(comic, candidate),
+    )) {
+      await setCachedComic(slug, comic);
+    }
+  }
+  return comic;
 }
 
 async function getSyncHistory() {
-    return (await get(StorageKeys.SYNC_HISTORY)) ?? {};
+  return (await get(StorageKeys.SYNC_HISTORY)) ?? {};
 }
 
 async function getCachedFollows(userId) {
-    if (!userId) {
-        return [];
-    }
+  if (!userId) {
+    return [];
+  }
 
-    const cache = (await get(StorageKeys.FOLLOWS_CACHE)) ?? {};
-    const entry = cache[userId];
-    if (entry && Date.now() - entry.timestamp < FOLLOWS_CACHE_DURATION) {
-        return Array.isArray(entry.data) ? entry.data : [];
-    }
+  const cache = (await get(StorageKeys.FOLLOWS_CACHE)) ?? {};
+  const entry = cache[userId];
+  if (entry && Date.now() - entry.timestamp < FOLLOWS_CACHE_DURATION) {
+    return Array.isArray(entry.data) ? entry.data : [];
+  }
 
-    const follows = await getUserFollows(userId);
-    cache[userId] = {
-        timestamp: Date.now(),
-        data: Array.isArray(follows) ? follows : [],
-    };
-    await set(StorageKeys.FOLLOWS_CACHE, cache);
-    return cache[userId].data;
+  const follows = await getUserFollows(userId);
+  cache[userId] = {
+    timestamp: Date.now(),
+    data: Array.isArray(follows) ? follows : [],
+  };
+  await set(StorageKeys.FOLLOWS_CACHE, cache);
+  return cache[userId].data;
 }
 
 async function invalidateFollowsCache(userId) {
-    if (!userId) {
-        return;
-    }
+  if (!userId) {
+    return;
+  }
 
-    const cache = (await get(StorageKeys.FOLLOWS_CACHE)) ?? {};
-    delete cache[userId];
-    await set(StorageKeys.FOLLOWS_CACHE, cache);
+  const cache = (await get(StorageKeys.FOLLOWS_CACHE)) ?? {};
+  delete cache[userId];
+  await set(StorageKeys.FOLLOWS_CACHE, cache);
 }
 
 function toNumericChapter(value) {
-    const numeric = Number(value);
-    return Number.isNaN(numeric) ? null : numeric;
+  const numeric = Number(value);
+  return Number.isNaN(numeric) ? null : numeric;
 }
 
 function findFollowEntry(comic, follows) {
-    return follows.find((entry) => {
-        const followComic = entry?.md_comics;
-        if (!followComic) {
-            return false;
-        }
+  return (
+    follows.find((entry) => {
+      const followComic = entry?.md_comics;
+      if (!followComic) {
+        return false;
+      }
 
-        return followComic.id === comic.id
-            || followComic.hid === comic.hid
-            || followComic.slug === comic.slug;
-    }) ?? null;
+      return (
+        followComic.id === comic.id ||
+        followComic.hid === comic.hid ||
+        followComic.slug === comic.slug
+      );
+    }) ?? null
+  );
 }
 
 async function buildSeriesStatus(comic) {
-    const history = await getSyncHistory();
-    const readEpisodes = Array.from(
-        new Set(
-            Object.entries(history)
-                .filter(([key]) => key.startsWith(`${comic.id}:`))
-                .map(([, value]) => value?.episode)
-                .filter((episode) => episode !== null && episode !== undefined)
-                .map((episode) => Number(episode))
-                .filter((episode) => !Number.isNaN(episode))
-        )
-    ).sort((a, b) => a - b);
+  const history = await getSyncHistory();
+  const readEpisodes = Array.from(
+    new Set(
+      Object.entries(history)
+        .filter(([key]) => key.startsWith(`${comic.id}:`))
+        .map(([, value]) => value?.episode)
+        .filter((episode) => episode !== null && episode !== undefined)
+        .map((episode) => Number(episode))
+        .filter((episode) => !Number.isNaN(episode)),
+    ),
+  ).sort((a, b) => a - b);
 
-    const userInfo = await get(StorageKeys.USER_INFO);
-    const follows = await getCachedFollows(userInfo?.userId ?? null);
-    const followEntry = findFollowEntry(comic, follows);
-    const libraryEpisode = toNumericChapter(followEntry?.md_chapters?.chap);
-    const libraryLastChapter = toNumericChapter(followEntry?.md_comics?.last_chapter);
+  const userInfo = await get(StorageKeys.USER_INFO);
+  const follows = await getCachedFollows(userInfo?.userId ?? null);
+  const followEntry = findFollowEntry(comic, follows);
+  const libraryEpisode = toNumericChapter(followEntry?.md_chapters?.chap);
+  const libraryLastChapter = toNumericChapter(
+    followEntry?.md_comics?.last_chapter,
+  );
 
-    const latestReadEpisode = readEpisodes.length > 0 ? readEpisodes[readEpisodes.length - 1] : null;
+  const latestReadEpisode =
+    readEpisodes.length > 0 ? readEpisodes[readEpisodes.length - 1] : null;
 
-    // Use whichever is higher: the Comick API's last-read or our local sync history.
-    // This prevents showing stale data when the API cache hasn't refreshed yet.
-    const effectiveReadEpisode = libraryEpisode != null && latestReadEpisode != null
-        ? Math.max(libraryEpisode, latestReadEpisode)
-        : latestReadEpisode ?? libraryEpisode;
+  // Use whichever is higher: the Comick API's last-read or our local sync history.
+  // This prevents showing stale data when the API cache hasn't refreshed yet.
+  const effectiveReadEpisode =
+    libraryEpisode != null && latestReadEpisode != null
+      ? Math.max(libraryEpisode, latestReadEpisode)
+      : (latestReadEpisode ?? libraryEpisode);
 
-    return {
-        comicTitle: comic.title ?? comic.slug,
-        comicSlug: comic.slug ?? null,
-        comicId: comic.id ?? null,
-        inLibrary: Boolean(followEntry),
-        libraryEpisode: effectiveReadEpisode,
-        libraryLastChapter,
-        chaptersRead: readEpisodes.length,
-        latestReadEpisode,
-        readEpisodes,
-    };
+  return {
+    comicTitle: comic.title ?? comic.slug,
+    comicSlug: comic.slug ?? null,
+    comicId: comic.id ?? null,
+    inLibrary: Boolean(followEntry),
+    libraryEpisode: effectiveReadEpisode,
+    libraryLastChapter,
+    chaptersRead: readEpisodes.length,
+    latestReadEpisode,
+    readEpisodes,
+  };
 }
 
 async function isDuplicateSync(comic, chapterData, detection) {
-    const history = await getSyncHistory();
-    const key = `${comic.id}:${chapterData.id}`;
-    const previous = history[key];
-    if (!previous) {
-        return false;
-    }
+  const history = await getSyncHistory();
+  const key = `${comic.id}:${chapterData.id}`;
+  const previous = history[key];
+  if (!previous) {
+    return false;
+  }
 
-    return Date.now() - previous.timestamp < DUPLICATE_SYNC_WINDOW_MS
-        && previous.episode === detection.episode
-        && previous.adapterId === detection.adapterId;
+  return (
+    Date.now() - previous.timestamp < DUPLICATE_SYNC_WINDOW_MS &&
+    previous.episode === detection.episode &&
+    previous.adapterId === detection.adapterId
+  );
 }
 
 async function rememberSync(comic, chapterData, detection) {
-    const history = await getSyncHistory();
-    const key = `${comic.id}:${chapterData.id}`;
-    history[key] = {
-        timestamp: Date.now(),
-        adapterId: detection.adapterId,
-        episode: detection.episode,
-        identifier: detection.identifier ?? null,
-        comicTitle: comic.title ?? comic.slug ?? null,
-    };
+  const history = await getSyncHistory();
+  const key = `${comic.id}:${chapterData.id}`;
+  history[key] = {
+    timestamp: Date.now(),
+    adapterId: detection.adapterId,
+    episode: detection.episode,
+    identifier: detection.identifier ?? null,
+    comicTitle: comic.title ?? comic.slug ?? null,
+  };
 
-    const cutoff = Date.now() - SYNC_HISTORY_RETENTION_MS;
-    for (const [entryKey, value] of Object.entries(history)) {
-        if ((value?.timestamp ?? 0) < cutoff) {
-            delete history[entryKey];
-        }
+  const cutoff = Date.now() - SYNC_HISTORY_RETENTION_MS;
+  for (const [entryKey, value] of Object.entries(history)) {
+    if ((value?.timestamp ?? 0) < cutoff) {
+      delete history[entryKey];
     }
+  }
 
-    await set(StorageKeys.SYNC_HISTORY, history);
+  await set(StorageKeys.SYNC_HISTORY, history);
 }
 
 // ─── Library ───
 
 async function getLibrary() {
-    const userInfo = await get(StorageKeys.USER_INFO);
-    const userId = userInfo?.userId ?? null;
-    if (!userId) return { library: [] };
+  const userInfo = await get(StorageKeys.USER_INFO);
+  const userId = userInfo?.userId ?? null;
+  if (!userId) return { library: [] };
 
-    try {
-        const follows = await getCachedFollows(userId);
-        return { library: Array.isArray(follows) ? follows : [] };
-    } catch (err) {
-        logger.error('Failed to load library:', err);
-        return { library: [] };
-    }
+  try {
+    const follows = await getCachedFollows(userId);
+    return { library: Array.isArray(follows) ? follows : [] };
+  } catch (err) {
+    logger.error("Failed to load library:", err);
+    return { library: [] };
+  }
 }
 
 // ─── Sync Queue Retry ───
 
 async function retrySyncQueue() {
-    const queue = (await get(StorageKeys.SYNC_QUEUE)) ?? [];
-    if (queue.length === 0) return { retried: 0, succeeded: 0, failed: 0 };
+  const queue = (await get(StorageKeys.SYNC_QUEUE)) ?? [];
+  if (queue.length === 0) return { retried: 0, succeeded: 0, failed: 0 };
 
-    // Clear queue first to prevent handleDetection from re-adding during retry
-    await set(StorageKeys.SYNC_QUEUE, []);
+  // Clear queue first to prevent handleDetection from re-adding during retry
+  await set(StorageKeys.SYNC_QUEUE, []);
 
-    let succeeded = 0;
-    let failed = 0;
-    const remaining = [];
+  let succeeded = 0;
+  let failed = 0;
+  const remaining = [];
 
-    for (const item of queue) {
-        try {
-            const result = await handleDetection(item);
-            if (result?.synced) {
-                succeeded++;
-            } else {
-                remaining.push({ ...item, error: result?.reason ?? 'retry_failed', timestamp: Date.now() });
-                failed++;
-            }
-        } catch (err) {
-            remaining.push({ ...item, error: err.message, timestamp: Date.now() });
-            failed++;
-        }
+  for (const item of queue) {
+    try {
+      const result = await handleDetection(item);
+      if (result?.synced) {
+        succeeded++;
+      } else {
+        remaining.push({
+          ...item,
+          error: result?.reason ?? "retry_failed",
+          timestamp: Date.now(),
+        });
+        failed++;
+      }
+    } catch (err) {
+      remaining.push({ ...item, error: err.message, timestamp: Date.now() });
+      failed++;
     }
+  }
 
-    // Merge any new failures that handleDetection added back with our remaining
-    const currentQueue = (await get(StorageKeys.SYNC_QUEUE)) ?? [];
-    await set(StorageKeys.SYNC_QUEUE, [...currentQueue, ...remaining]);
-    logger.info(`Retry complete: ${succeeded} succeeded, ${failed} failed`);
-    return { retried: queue.length, succeeded, failed };
+  // Merge any new failures that handleDetection added back with our remaining
+  const currentQueue = (await get(StorageKeys.SYNC_QUEUE)) ?? [];
+  await set(StorageKeys.SYNC_QUEUE, [...currentQueue, ...remaining]);
+  logger.info(`Retry complete: ${succeeded} succeeded, ${failed} failed`);
+  return { retried: queue.length, succeeded, failed };
 }
 
 // ─── Browser Notifications ───
 
 async function showBrowserNotification(title, message, id) {
-    const settings = await getSettings();
-    if (!settings.notifications) return;
+  const settings = await getSettings();
+  if (!settings.notifications) return;
 
-    try {
-        chrome.notifications.create(id ?? `comicksync-${Date.now()}`, {
-            type: 'basic',
-            title: title ?? 'ComickSync',
-            message: message ?? '',
-        });
-    } catch {
-        logger.warn('Failed to show notification');
-    }
+  try {
+    chrome.notifications.create(id ?? `comicksync-${Date.now()}`, {
+      type: "basic",
+      title: title ?? "ComickSync",
+      message: message ?? "",
+    });
+  } catch {
+    logger.warn("Failed to show notification");
+  }
 }
 
 // ─── Settings Change Handler ───
 
 function onSettingChanged(key, value) {
-    if (key === 'autoRetryFailed' || key === 'retryIntervalMinutes') {
-        getSettings().then((settings) => {
-            if (settings.autoRetryFailed) {
-                chrome.alarms.create(RETRY_SYNC_ALARM, {
-                    periodInMinutes: settings.retryIntervalMinutes ?? 30,
-                });
-            } else {
-                chrome.alarms.clear(RETRY_SYNC_ALARM);
-            }
+  if (key === "autoRetryFailed" || key === "retryIntervalMinutes") {
+    getSettings().then((settings) => {
+      if (settings.autoRetryFailed) {
+        chrome.alarms.create(RETRY_SYNC_ALARM, {
+          periodInMinutes: settings.retryIntervalMinutes ?? 30,
         });
-    }
+      } else {
+        chrome.alarms.clear(RETRY_SYNC_ALARM);
+      }
+    });
+  }
 }
 
 function parseVersionParts(version) {
-    return String(version ?? '')
-        .split('.')
-        .map((part) => Number.parseInt(part, 10))
-        .map((part) => (Number.isNaN(part) ? 0 : part));
+  return String(version ?? "")
+    .split(".")
+    .map((part) => Number.parseInt(part, 10))
+    .map((part) => (Number.isNaN(part) ? 0 : part));
 }
 
 function compareVersions(currentVersion, latestVersion) {
-    const current = parseVersionParts(currentVersion);
-    const latest = parseVersionParts(latestVersion);
-    const maxLength = Math.max(current.length, latest.length);
+  const current = parseVersionParts(currentVersion);
+  const latest = parseVersionParts(latestVersion);
+  const maxLength = Math.max(current.length, latest.length);
 
-    for (let index = 0; index < maxLength; index += 1) {
-        const currentPart = current[index] ?? 0;
-        const latestPart = latest[index] ?? 0;
-        if (currentPart === latestPart) {
-            continue;
-        }
-        return latestPart > currentPart ? -1 : 1;
+  for (let index = 0; index < maxLength; index += 1) {
+    const currentPart = current[index] ?? 0;
+    const latestPart = latest[index] ?? 0;
+    if (currentPart === latestPart) {
+      continue;
     }
+    return latestPart > currentPart ? -1 : 1;
+  }
 
-    return 0;
+  return 0;
 }
 
 async function fetchRepoManifestVersion() {
-    const response = await fetch(REPO_MANIFEST_URL, {
-        headers: {
-            Accept: 'application/json',
-        },
-        cache: 'no-store',
-    });
-    if (!response.ok) {
-        throw new Error(`manifest_fetch_failed:${response.status}`);
-    }
+  const response = await fetch(REPO_MANIFEST_URL, {
+    headers: {
+      Accept: "application/json",
+    },
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    throw new Error(`manifest_fetch_failed:${response.status}`);
+  }
 
-    const manifest = await response.json();
-    return manifest?.version ?? null;
+  const manifest = await response.json();
+  return manifest?.version ?? null;
 }
 
 async function fetchLatestReleaseUrl() {
-    const response = await fetch(LATEST_RELEASE_API_URL, {
-        headers: {
-            Accept: 'application/vnd.github+json',
-        },
-        cache: 'no-store',
-    });
-    if (!response.ok) {
-        throw new Error(`release_fetch_failed:${response.status}`);
-    }
+  const response = await fetch(LATEST_RELEASE_API_URL, {
+    headers: {
+      Accept: "application/vnd.github+json",
+    },
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    throw new Error(`release_fetch_failed:${response.status}`);
+  }
 
-    const release = await response.json();
-    return release?.html_url ?? FALLBACK_RELEASE_URL;
+  const release = await response.json();
+  return release?.html_url ?? FALLBACK_RELEASE_URL;
 }
 
 async function getUpdateInfo() {
-    const cached = await get(StorageKeys.UPDATE_CHECK);
-    if (cached && Date.now() - (cached.checkedAt ?? 0) < UPDATE_CHECK_TTL_MS) {
-        return cached;
-    }
+  const cached = await get(StorageKeys.UPDATE_CHECK);
+  if (cached && Date.now() - (cached.checkedAt ?? 0) < UPDATE_CHECK_TTL_MS) {
+    return cached;
+  }
 
-    const currentVersion = chrome.runtime.getManifest().version;
+  const currentVersion = chrome.runtime.getManifest().version;
 
-    try {
-        const [latestVersion, releaseUrl] = await Promise.all([
-            fetchRepoManifestVersion(),
-            fetchLatestReleaseUrl(),
-        ]);
-        const update = {
-            checkedAt: Date.now(),
-            currentVersion,
-            latestVersion,
-            updateAvailable: compareVersions(currentVersion, latestVersion) < 0,
-            releaseUrl: releaseUrl ?? FALLBACK_RELEASE_URL,
-            error: null,
-        };
-        await set(StorageKeys.UPDATE_CHECK, update);
-        return update;
-    } catch (error) {
-        logger.warn('Failed to check for updates:', error);
-        const fallback = {
-            checkedAt: Date.now(),
-            currentVersion,
-            latestVersion: null,
-            updateAvailable: false,
-            releaseUrl: FALLBACK_RELEASE_URL,
-            error: error.message,
-        };
-        await set(StorageKeys.UPDATE_CHECK, fallback);
-        return fallback;
-    }
+  try {
+    const [latestVersion, releaseUrl] = await Promise.all([
+      fetchRepoManifestVersion(),
+      fetchLatestReleaseUrl(),
+    ]);
+    const update = {
+      checkedAt: Date.now(),
+      currentVersion,
+      latestVersion,
+      updateAvailable: compareVersions(currentVersion, latestVersion) < 0,
+      releaseUrl: releaseUrl ?? FALLBACK_RELEASE_URL,
+      error: null,
+    };
+    await set(StorageKeys.UPDATE_CHECK, update);
+    return update;
+  } catch (error) {
+    logger.warn("Failed to check for updates:", error);
+    const fallback = {
+      checkedAt: Date.now(),
+      currentVersion,
+      latestVersion: null,
+      updateAvailable: false,
+      releaseUrl: FALLBACK_RELEASE_URL,
+      error: error.message,
+    };
+    await set(StorageKeys.UPDATE_CHECK, fallback);
+    return fallback;
+  }
 }

@@ -1,138 +1,141 @@
-import * as logger from '../utils/logger.js';
-import { get, set } from '../utils/storage.js';
+import * as logger from "../utils/logger.js";
+import { get, set } from "../utils/storage.js";
 
 const CHIBI_REPOSITORIES = [
-    'https://chibi.malsync.moe/config',
-    'https://chibi.malsync.moe/adult',
+  "https://chibi.malsync.moe/config",
+  "https://chibi.malsync.moe/adult",
 ];
-const PAGE_LIST_CACHE_KEY = 'malsync_page_list';
-const PAGES_CACHE_KEY = 'malsync_pages_cache';
+const PAGE_LIST_CACHE_KEY = "malsync_page_list";
+const PAGES_CACHE_KEY = "malsync_pages_cache";
 const CACHE_DURATION = 24 * 60 * 60 * 1000;
 
 function isFresh(timestamp) {
-    return Date.now() - timestamp < CACHE_DURATION;
+  return Date.now() - timestamp < CACHE_DURATION;
 }
 
 function withTimestamp(data) {
-    return { data, timestamp: Date.now() };
+  return { data, timestamp: Date.now() };
 }
 
 async function fetchJson(url) {
-    try {
-        const response = await fetch(url);
-        if (response.ok) {
-            return response.json();
-        }
-    } catch {
-        // Ignore and return null below.
+  try {
+    const response = await fetch(url);
+    if (response.ok) {
+      return response.json();
     }
+  } catch {
+    // Ignore and return null below.
+  }
 
-    return null;
+  return null;
 }
 
 function mergePageLists(pageLists) {
-    const merged = { pages: {} };
+  const merged = { pages: {} };
 
-    for (const { root, data } of pageLists) {
-        const pages = data?.pages ?? {};
-        for (const [key, meta] of Object.entries(pages)) {
-            merged.pages[key] = {
-                ...meta,
-                root,
-            };
-        }
+  for (const { root, data } of pageLists) {
+    const pages = data?.pages ?? {};
+    for (const [key, meta] of Object.entries(pages)) {
+      merged.pages[key] = {
+        ...meta,
+        root,
+      };
     }
+  }
 
-    return merged;
+  return merged;
 }
 
 async function loadPageList() {
-    const cached = await get(PAGE_LIST_CACHE_KEY);
-    if (cached && isFresh(cached.timestamp)) {
-        return cached.data;
-    }
+  const cached = await get(PAGE_LIST_CACHE_KEY);
+  if (cached && isFresh(cached.timestamp)) {
+    return cached.data;
+  }
 
-    const pageLists = await Promise.all(
-        CHIBI_REPOSITORIES.map(async (root) => {
-            const data = await fetchJson(`${root}/list.json`);
-            return data ? { root, data } : null;
-        })
-    );
+  const pageLists = await Promise.all(
+    CHIBI_REPOSITORIES.map(async (root) => {
+      const data = await fetchJson(`${root}/list.json`);
+      return data ? { root, data } : null;
+    }),
+  );
 
-    const availableLists = pageLists.filter(Boolean);
-    if (availableLists.length > 0) {
-        const data = mergePageLists(availableLists);
-        await set(PAGE_LIST_CACHE_KEY, withTimestamp(data));
-        return data;
-    }
+  const availableLists = pageLists.filter(Boolean);
+  if (availableLists.length > 0) {
+    const data = mergePageLists(availableLists);
+    await set(PAGE_LIST_CACHE_KEY, withTimestamp(data));
+    return data;
+  }
 
-    return cached?.data ?? null;
+  return cached?.data ?? null;
 }
 
 async function loadPageDefinition(pageKey, meta = null) {
-    const cache = (await get(PAGES_CACHE_KEY)) ?? {};
-    const cachedEntry = cache[pageKey];
+  const cache = (await get(PAGES_CACHE_KEY)) ?? {};
+  const cachedEntry = cache[pageKey];
 
-    if (cachedEntry && isFresh(cachedEntry.timestamp)) {
-        return cachedEntry.data;
-    }
+  if (cachedEntry && isFresh(cachedEntry.timestamp)) {
+    return cachedEntry.data;
+  }
 
-    const root = meta?.root ?? CHIBI_REPOSITORIES[0];
-    const versionHash = meta?.version?.hash;
-    const urls = versionHash
-        ? [`${root}/pages/${pageKey}.json?version=${versionHash}`, `${root}/pages/${pageKey}.json`]
-        : [`${root}/pages/${pageKey}.json`];
+  const root = meta?.root ?? CHIBI_REPOSITORIES[0];
+  const versionHash = meta?.version?.hash;
+  const urls = versionHash
+    ? [
+        `${root}/pages/${pageKey}.json?version=${versionHash}`,
+        `${root}/pages/${pageKey}.json`,
+      ]
+    : [`${root}/pages/${pageKey}.json`];
 
-    let data = null;
-    for (const url of urls) {
-        data = await fetchJson(url);
-        if (data) {
-            break;
-        }
-    }
-
+  let data = null;
+  for (const url of urls) {
+    data = await fetchJson(url);
     if (data) {
-        cache[pageKey] = withTimestamp(data);
-        await set(PAGES_CACHE_KEY, cache);
+      break;
     }
+  }
 
-    return data ?? cachedEntry?.data ?? null;
+  if (data) {
+    cache[pageKey] = withTimestamp(data);
+    await set(PAGES_CACHE_KEY, cache);
+  }
+
+  return data ?? cachedEntry?.data ?? null;
 }
 
 async function loadAllMangaPages() {
-    const pageList = await loadPageList();
-    if (!pageList) {
-        logger.warn('Could not load MalSync page list');
-        return [];
+  const pageList = await loadPageList();
+  if (!pageList) {
+    logger.warn("Could not load MalSync page list");
+    return [];
+  }
+
+  const pages = pageList.pages ?? {};
+  const mangaPages = [];
+
+  for (const [key, meta] of Object.entries(pages)) {
+    if (meta?.type !== "manga") {
+      continue;
     }
+    mangaPages.push({ key, meta });
+  }
 
-    const pages = pageList.pages ?? {};
-    const mangaPages = [];
+  logger.info(`Found ${mangaPages.length} manga pages in MalSync index`);
 
-    for (const [key, meta] of Object.entries(pages)) {
-        if (meta?.type !== 'manga') {
-            continue;
-        }
-        mangaPages.push({ key, meta });
+  const definitions = [];
+  for (const { key, meta } of mangaPages) {
+    const definition = await loadPageDefinition(key, meta);
+    if (definition) {
+      definitions.push({ key, meta, definition });
     }
+  }
 
-    logger.info(`Found ${mangaPages.length} manga pages in MalSync index`);
-
-    const definitions = [];
-    for (const { key, meta } of mangaPages) {
-        const definition = await loadPageDefinition(key, meta);
-        if (definition) {
-            definitions.push({ key, meta, definition });
-        }
-    }
-
-    logger.info(`Loaded ${definitions.length} manga page definitions`);
-    return definitions;
+  logger.info(`Loaded ${definitions.length} manga page definitions`);
+  return definitions;
 }
 
 async function clearCache() {
-    await set(PAGE_LIST_CACHE_KEY, null);
-    await set(PAGES_CACHE_KEY, null);
+  await set(PAGE_LIST_CACHE_KEY, null);
+  await set(PAGES_CACHE_KEY, null);
 }
 
 export { loadPageList, loadPageDefinition, loadAllMangaPages, clearCache };
