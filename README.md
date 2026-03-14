@@ -30,3 +30,9 @@ That means ComickSync supports everything that MalSync supports.
 
 - You need a Comick account for syncing.
 - If a chapter cannot be matched automatically, you can retry or sync it manually from the extension UI.
+
+## License
+
+MalSync is licensed under GPL-3.0, and ComickSync is largely derived from MalSync.
+
+Because of that, ComickSync is also licensed under GPL-3.0.
